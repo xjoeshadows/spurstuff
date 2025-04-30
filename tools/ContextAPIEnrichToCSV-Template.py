@@ -71,9 +71,10 @@ if __name__ == "__main__":
         print(f"Error: Input file not found at {input_file_path}")
         sys.exit(1)
 
-    # Extract the directory from the input file path
+    # Extract the directory and base filename from the input file path
     output_dir = os.path.dirname(input_file_path)
-    output_file_path = os.path.join(output_dir, "csv_export.csv")
+    base_filename = os.path.splitext(os.path.basename(input_file_path))[0]
+    output_file_path = os.path.join(output_dir, f"{base_filename}.csv")
 
     ip_addresses = []
     try:
