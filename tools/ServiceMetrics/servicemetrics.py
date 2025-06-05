@@ -3,6 +3,7 @@ import gzip
 import json
 import io
 import os
+import sys # Import sys for exiting on critical errors
 
 def download_file(url, token):
     """
@@ -21,7 +22,7 @@ def download_file(url, token):
         response.raise_for_status()  # Raise an exception for bad status codes
         return response.content  # Return the content as bytes
     except requests.exceptions.RequestException as e:
-        print(f"Error downloading file from {url}: {e}")
+        print(f"Error downloading file from {url}: {e}", file=sys.stderr)
         return None
 
 def decompress_gzip(data):
@@ -38,7 +39,7 @@ def decompress_gzip(data):
         with gzip.GzipFile(fileobj=io.BytesIO(data), mode='rb') as f:
             return f.read()
     except Exception as e:
-        print(f"Error decompressing gzip data: {e}")
+        print(f"Error decompressing gzip data: {e}", file=sys.stderr)
         return None
 
 
@@ -58,7 +59,8 @@ def extract_tag_values(data):
         json_string = data.decode('utf-8')
 
         # Split the string into individual JSON objects.
-        json_objects = json_string.strip().split('\n')  # Split by newlines
+        # This handles cases where the gzipped file contains JSON Lines (one JSON object per line)
+        json_objects = json_string.strip().split('\n')
 
         for obj_str in json_objects:
             try:
@@ -67,13 +69,14 @@ def extract_tag_values(data):
                 if isinstance(json_data, dict) and 'tag' in json_data:
                     tag_values.append(json_data['tag'])
             except json.JSONDecodeError:
-                print(f"Skipping invalid JSON object: {obj_str[:50]}...")
-                pass
+                # Print a warning for invalid JSON objects but continue processing
+                print(f"Warning: Skipping invalid JSON object line: {obj_str[:80]}...", file=sys.stderr)
+                pass # Skip this line and try the next one
 
         return tag_values
 
     except Exception as e:
-        print(f"Error processing data: {e}")
+        print(f"Error processing data: {e}", file=sys.stderr)
         return None
 
 def write_tags_to_file(tags, filename):
@@ -85,23 +88,31 @@ def write_tags_to_file(tags, filename):
         filename (str): The name of the file to write to.
     """
     try:
-        with open(filename, 'w') as f:
+        # Ensure utf-8 encoding for tags
+        with open(filename, 'w', encoding='utf-8') as f:
             for tag in tags:
                 f.write(tag + '\n')
         print(f"Tags successfully written to {filename}")
+        return True
     except Exception as e:
-        print(f"Error writing tags to file: {e}")
-
+        print(f"Error writing tags to file '{filename}': {e}", file=sys.stderr)
+        return False
 
 
 def main():
     """
     Main function to download, decompress, and extract tag values.
     """
-    spur_token = "YOURTOKENHERE"  # Hardcoded SPUR API Token
+    spur_token = "PUT_YOUR_API_TOKEN_HERE"  # Hardcoded SPUR API Token
     file_url = 'https://feeds.spur.us/v2/service-metrics/latest.json.gz'
+    
     # Prompt the user for the output filename
-    output_filename = input("Enter the name of the output file (e.g., tags.txt): ")
+    output_filename = input("Enter the name of the output file (e.g., servicetags.txt): ").strip()
+
+    # Set default filename if user input is empty
+    if not output_filename:
+        output_filename = "servicetags.txt"
+        print(f"No filename provided. Using default: {output_filename}")
 
     file_content = download_file(file_url, spur_token)
     if file_content:
@@ -109,16 +120,17 @@ def main():
         if decompressed_data:
             tag_values = extract_tag_values(decompressed_data)
             if tag_values:
-                # Removed print("Tag values:", tag_values)
-                write_tags_to_file(tag_values, output_filename) # write tags to file
+                if not write_tags_to_file(tag_values, output_filename):
+                    sys.exit(1) # Exit if writing fails
             else:
-                print("Failed to extract tag values.")
+                print("Failed to extract tag values.", file=sys.stderr)
+                sys.exit(1)
         else:
-            print("Failed to decompress the data.")
+            print("Failed to decompress the data.", file=sys.stderr)
+            sys.exit(1)
     else:
-        print("Failed to download the file.")
-
-
+        print("Failed to download the file.", file=sys.stderr)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
