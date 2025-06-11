@@ -213,19 +213,20 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"An unexpected error occurred during 'country':'KP' query: {e}", file=sys.stderr)
 
-    # Query 2: grep for "TROJAN"
+    # Query 2: grep for "TROJAN" - Refined query
     trojan_ips_filename = f"{current_date}AnonResTrojanIPs.txt"
-    print(f"Running query for 'TROJAN' against {decompressed_source_file}...")
+    print(f"Running refined query for 'services:[\"TROJAN\"]' against {decompressed_source_file}...")
     try:
         with open(trojan_ips_filename, 'w') as trojan_file:
-            grep_trojan_command = ["grep", "-i", "-E", "TROJAN", decompressed_source_file]
+            # Refined regex to accurately find "services":["TROJAN"]
+            grep_trojan_command = ["grep", "-i", "-E", "\"services\":\\[\"TROJAN\"\\]", decompressed_source_file]
             subprocess.run(grep_trojan_command, stdout=trojan_file, check=True)
-        print(f"Results for 'TROJAN' written to {trojan_ips_filename}")
+        print(f"Results for 'services:[\"TROJAN\"]' written to {trojan_ips_filename}")
     except subprocess.CalledProcessError as e:
         if e.returncode == 1:
-            print(f"No matches found for 'TROJAN' in {decompressed_source_file}. This is not necessarily an error.", file=sys.stderr)
+            print(f"No matches found for 'services:[\"TROJAN\"]' in {decompressed_source_file}. This is not necessarily an error.", file=sys.stderr)
         else:
-            print(f"An error occurred during grep execution for 'TROJAN': {e}", file=sys.stderr)
+            print(f"An error occurred during grep execution for 'services:[\"TROJAN\"]': {e}", file=sys.stderr)
     except Exception as e:
         print(f"An unexpected error occurred during 'TROJAN' query: {e}", file=sys.stderr)
 
