@@ -1,3 +1,5 @@
 feedsandqueries.py: Will download the anon-res feed and run a couple of queries against it. For example, looking for KP (DPRK) IP addresses and TROJAN related IP addresses.
 
 dailyfeedcounts.py: Will grab the line count of each of the feeds and report them to the user. Handy for adding to your .zshrc file.
+
+anonresqueries-final.py: Will prompt the user to either download a new AnonRes feed file or reference an existing file on the user's machine. Run queries against it including a shuf command, export all queries to .txt files, and convert them to csv.
