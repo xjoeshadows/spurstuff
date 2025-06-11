@@ -130,12 +130,15 @@ if __name__ == "__main__":
     # Default date format to YYYYMMDD (4-digit year)
     current_date = datetime.datetime.now().strftime("%Y%m%d") 
     decompressed_source_file = None
+    # Initialize base_filename to a default, will be overwritten
+    base_filename = "UnknownFeed" 
     
     # Prompt user for input method
-    use_existing_file_input = input("Do you want to use an existing YYYYMMDDAnonRes file? (Y/N): ").strip().upper()
+    use_existing_file_input = input("Do you want to use an existing Spur Feed file? (Y/N): ").strip().upper()
 
     if use_existing_file_input == 'Y':
-        provided_file_path = input("Please enter the full path to your YYYYMMDDAnonRes file: ").strip()
+        # Added note about expected filename format
+        provided_file_path = input("Please enter the full path to your Spur Feed file (e.g., '/path/to/20240610AnonRes'): ").strip()
         if not os.path.exists(provided_file_path):
             print(f"Error: Provided input file '{provided_file_path}' not found. Exiting.", file=sys.stderr)
             sys.exit(1)
@@ -144,14 +147,15 @@ if __name__ == "__main__":
         decompressed_source_file = provided_file_path
         print(f"Using provided file: {decompressed_source_file}")
 
-        # Attempt to extract YYYYMMDD from the provided filename for consistent output naming
-        # This regex looks for 8 digits followed by "AnonRes" in the filename
-        match = re.search(r'(\d{8})AnonRes', os.path.basename(provided_file_path))
+        # Attempt to extract YYYYMMDD and FeedName from the provided filename for consistent output naming
+        # This regex looks for 8 digits followed by "AnonRes", "AnonResRT", or "Anonymous" in the filename
+        match = re.search(r'(\d{8})(AnonRes|AnonResRT|Anonymous)', os.path.basename(provided_file_path))
         if match:
             current_date = match.group(1) # Use the extracted date
-            print(f"Extracted date '{current_date}' from the provided filename for output files.")
+            base_filename = match.group(2) # Extract the feed name
+            print(f"Extracted date '{current_date}' and feed '{base_filename}' from the provided filename for output files.")
         else:
-            print(f"Warning: Could not extract YYYYMMDD from provided filename '{os.path.basename(provided_file_path)}'. Using current system date '{current_date}' for output files.", file=sys.stderr)
+            print(f"Warning: Could not extract YYYYMMDD and FeedName from provided filename '{os.path.basename(provided_file_path)}'. Using current system date '{current_date}' and default feed name '{base_filename}' for output files. Please ensure your filename follows the YYYYMMDD<FeedName> format for consistent results.", file=sys.stderr)
 
     elif use_existing_file_input == 'N':
         # No file provided, proceed with downloading a fresh one
@@ -178,7 +182,7 @@ if __name__ == "__main__":
                 print("Invalid choice. Please enter a number from the list.")
 
         api_url = selected_feed["url"]
-        base_filename = selected_feed["base_filename"]
+        base_filename = selected_feed["base_filename"] # Assign base_filename from selected feed
 
         gz_filename = f"{current_date}{base_filename}.json.gz"
         decompressed_source_file = f"{current_date}{base_filename}" 
@@ -215,7 +219,8 @@ if __name__ == "__main__":
         sys.exit(1)
 
     # Query 1: grep for "country":"KP"
-    kp_ips_filename = f"{current_date}AnonResKPIPs.txt"
+    # Updated filename to include base_filename
+    kp_ips_filename = f"{current_date}{base_filename}KPIPs.txt"
     print(f"Running query for 'country':'KP' against {decompressed_source_file}...")
     try:
         with open(kp_ips_filename, 'w') as kp_file:
@@ -232,7 +237,8 @@ if __name__ == "__main__":
         print(f"An unexpected error occurred during 'country':'KP' query: {e}", file=sys.stderr)
 
     # Query 2: grep for "TROJAN" - Refined query
-    trojan_ips_filename = f"{current_date}AnonResTrojanIPs.txt"
+    # Updated filename to include base_filename
+    trojan_ips_filename = f"{current_date}{base_filename}TrojanIPs.txt"
     print(f"Running refined query for 'services:[\"TROJAN\"]' against {decompressed_source_file}...")
     try:
         with open(trojan_ips_filename, 'w') as trojan_file:
@@ -248,8 +254,9 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"An unexpected error occurred during 'TROJAN' query: {e}", file=sys.stderr)
 
-    # New command: shuf -n 10000 YYYYMMDDAnonRes
-    shuf_filename = f"{current_date}AnonRes10kShuf.txt"
+    # New command: shuf -n 10000 <decompressed_source_file>
+    # Updated filename to include base_filename
+    shuf_filename = f"{current_date}{base_filename}10kShuf.txt"
     print(f"Shuffling 10000 lines from {decompressed_source_file} to {shuf_filename}...")
     try:
         # Use subprocess.run with stdout redirection to save shuf output to a file
@@ -269,7 +276,8 @@ if __name__ == "__main__":
     # Process KP IPs
     # Check if file exists and is not empty before processing
     if os.path.exists(kp_ips_filename) and os.path.getsize(kp_ips_filename) > 0:
-        kp_output_csv = f"{current_date}AnonResKPIPs.csv"
+        # Updated output CSV filename to include base_filename
+        kp_output_csv = f"{current_date}{base_filename}KPIPs.csv"
         print(f"Processing {kp_ips_filename} to {kp_output_csv}")
         process_json_to_csv(kp_ips_filename, kp_output_csv)
     else:
@@ -277,7 +285,8 @@ if __name__ == "__main__":
 
     # Process Trojan IPs
     if os.path.exists(trojan_ips_filename) and os.path.getsize(trojan_ips_filename) > 0:
-        trojan_output_csv = f"{current_date}AnonResTrojanIPs.csv"
+        # Updated output CSV filename to include base_filename
+        trojan_output_csv = f"{current_date}{base_filename}TrojanIPs.csv"
         print(f"Processing {trojan_ips_filename} to {trojan_output_csv}")
         process_json_to_csv(trojan_ips_filename, trojan_output_csv)
     else:
@@ -285,7 +294,8 @@ if __name__ == "__main__":
 
     # Process 10k Shuffled data
     if os.path.exists(shuf_filename) and os.path.getsize(shuf_filename) > 0:
-        shuf_output_csv = f"{current_date}AnonRes10kShuf.csv"
+        # Updated output CSV filename to include base_filename
+        shuf_output_csv = f"{current_date}{base_filename}10kShuf.csv"
         print(f"Processing {shuf_filename} to {shuf_output_csv}")
         process_json_to_csv(shuf_filename, shuf_output_csv)
     else:
