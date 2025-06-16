@@ -138,24 +138,34 @@ if __name__ == "__main__":
 
     if use_existing_file_input == 'Y':
         # Added note about expected filename format
-        provided_file_path = input("Please enter the full path to your Spur Feed file (e.g., '/path/to/20240610AnonRes'): ").strip()
+        provided_file_path = input("Please enter the full path to your Spur Feed file (e.g., '/path/to/20240610AnonRes.json'): ").strip()
         if not os.path.exists(provided_file_path):
             print(f"Error: Provided input file '{provided_file_path}' not found. Exiting.", file=sys.stderr)
             sys.exit(1)
         
-        # Set the source file to the provided path
+        # Set the source file to the provided path directly, including its extension
         decompressed_source_file = provided_file_path
         print(f"Using provided file: {decompressed_source_file}")
 
         # Attempt to extract YYYYMMDD and FeedName from the provided filename for consistent output naming
-        # This regex looks for 8 digits followed by "AnonRes", "AnonResRT", or "Anonymous" in the filename
-        match = re.search(r'(\d{8})(AnonRes|AnonResRT|Anonymous)', os.path.basename(provided_file_path))
+        # This regex looks for 8 digits followed by "AnonRes", "AnonResRT", or "Anonymous" and ends with .json
+        match = re.search(r'(\d{8})(AnonRes|AnonResRT|Anonymous)\.json$', os.path.basename(provided_file_path))
         if match:
             current_date = match.group(1) # Use the extracted date
-            base_filename = match.group(2) # Extract the feed name
+            base_filename = match.group(2) # Extract the feed name (e.g., AnonRes, AnonResRT)
             print(f"Extracted date '{current_date}' and feed '{base_filename}' from the provided filename for output files.")
         else:
-            print(f"Warning: Could not extract YYYYMMDD and FeedName from provided filename '{os.path.basename(provided_file_path)}'. Using current system date '{current_date}' and default feed name '{base_filename}' for output files. Please ensure your filename follows the YYYYMMDD<FeedName> format for consistent results.", file=sys.stderr)
+            # Fallback for base_filename if regex doesn't match
+            # Try to get a meaningful part of the filename if it doesn't strictly match the pattern
+            name_without_ext = os.path.splitext(os.path.basename(provided_file_path))[0]
+            # Try to remove the YYYYMMDD part if present
+            base_filename_candidate = re.sub(r'^\d{8}', '', name_without_ext)
+            if base_filename_candidate:
+                base_filename = base_filename_candidate
+            else:
+                base_filename = "CustomFeed" # Generic fallback if nothing suitable is found
+
+            print(f"Warning: Could not extract YYYYMMDD and standard FeedName from provided filename '{os.path.basename(provided_file_path)}'. Using current system date '{current_date}' and derived feed name '{base_filename}' for output files. Please ensure your filename follows the YYYYMMDD<FeedName>.json format for consistent results.", file=sys.stderr)
 
     elif use_existing_file_input == 'N':
         # No file provided, proceed with downloading a fresh one
@@ -185,7 +195,8 @@ if __name__ == "__main__":
         base_filename = selected_feed["base_filename"] # Assign base_filename from selected feed
 
         gz_filename = f"{current_date}{base_filename}.json.gz"
-        decompressed_source_file = f"{current_date}{base_filename}" 
+        # Crucial fix: ensure decompressed_source_file also has .json extension
+        decompressed_source_file = f"{current_date}{base_filename}.json" 
 
         print(f"Fetching {api_url} to {gz_filename}...")
         try:
@@ -203,7 +214,7 @@ if __name__ == "__main__":
 
         print(f"Decompressing {gz_filename}...")
         try:
-            # gunzip -df will decompress in place, removing the .gz extension
+            # gunzip -df will decompress in place, typically removing only the .gz, leaving .json
             subprocess.run(["gunzip", "-df", gz_filename], check=True)
             print(f"Successfully decompressed {gz_filename} to {decompressed_source_file}")
         except subprocess.CalledProcessError as e:
@@ -218,8 +229,9 @@ if __name__ == "__main__":
         print(f"Critical Error: Source data file '{decompressed_source_file}' could not be located or created. Exiting.", file=sys.stderr)
         sys.exit(1)
 
+    # All subsequent output filenames now dynamically use current_date and base_filename
+
     # Query 1: grep for "country":"KP"
-    # Updated filename to include base_filename
     kp_ips_filename = f"{current_date}{base_filename}KPIPs.txt"
     print(f"Running query for 'country':'KP' against {decompressed_source_file}...")
     try:
@@ -228,7 +240,6 @@ if __name__ == "__main__":
             subprocess.run(grep_kp_command, stdout=kp_file, check=True)
         print(f"Results for 'country':'KP' written to {kp_ips_filename}")
     except subprocess.CalledProcessError as e:
-        # Grep returns 1 if no lines were selected, which is not an error if no matches are expected.
         if e.returncode == 1:
             print(f"No matches found for 'country':'KP' in {decompressed_source_file}. This is not necessarily an error.", file=sys.stderr)
         else:
@@ -237,7 +248,6 @@ if __name__ == "__main__":
         print(f"An unexpected error occurred during 'country':'KP' query: {e}", file=sys.stderr)
 
     # Query 2: grep for "TROJAN" - Refined query
-    # Updated filename to include base_filename
     trojan_ips_filename = f"{current_date}{base_filename}TrojanIPs.txt"
     print(f"Running refined query for 'services:[\"TROJAN\"]' against {decompressed_source_file}...")
     try:
@@ -255,11 +265,9 @@ if __name__ == "__main__":
         print(f"An unexpected error occurred during 'TROJAN' query: {e}", file=sys.stderr)
 
     # New command: shuf -n 10000 <decompressed_source_file>
-    # Updated filename to include base_filename
     shuf_filename = f"{current_date}{base_filename}10kShuf.txt"
     print(f"Shuffling 10000 lines from {decompressed_source_file} to {shuf_filename}...")
     try:
-        # Use subprocess.run with stdout redirection to save shuf output to a file
         with open(shuf_filename, 'w') as shuf_file:
             shuf_command = ["shuf", "-n", "10000", decompressed_source_file]
             subprocess.run(shuf_command, stdout=shuf_file, check=True)
@@ -274,9 +282,7 @@ if __name__ == "__main__":
     print("\nProcessing queried and shuffled data to CSV...")
 
     # Process KP IPs
-    # Check if file exists and is not empty before processing
     if os.path.exists(kp_ips_filename) and os.path.getsize(kp_ips_filename) > 0:
-        # Updated output CSV filename to include base_filename
         kp_output_csv = f"{current_date}{base_filename}KPIPs.csv"
         print(f"Processing {kp_ips_filename} to {kp_output_csv}")
         process_json_to_csv(kp_ips_filename, kp_output_csv)
@@ -285,7 +291,6 @@ if __name__ == "__main__":
 
     # Process Trojan IPs
     if os.path.exists(trojan_ips_filename) and os.path.getsize(trojan_ips_filename) > 0:
-        # Updated output CSV filename to include base_filename
         trojan_output_csv = f"{current_date}{base_filename}TrojanIPs.csv"
         print(f"Processing {trojan_ips_filename} to {trojan_output_csv}")
         process_json_to_csv(trojan_ips_filename, trojan_output_csv)
@@ -294,7 +299,6 @@ if __name__ == "__main__":
 
     # Process 10k Shuffled data
     if os.path.exists(shuf_filename) and os.path.getsize(shuf_filename) > 0:
-        # Updated output CSV filename to include base_filename
         shuf_output_csv = f"{current_date}{base_filename}10kShuf.csv"
         print(f"Processing {shuf_filename} to {shuf_output_csv}")
         process_json_to_csv(shuf_filename, shuf_output_csv)
