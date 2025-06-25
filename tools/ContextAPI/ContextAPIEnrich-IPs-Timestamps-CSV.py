@@ -8,7 +8,7 @@ import csv
 
 # --- Configuration ---
 api_url_base = "https://api.spur.us/v2/context/"
-api_token = "HNRDfEWuYGCvuD3I1hCPsK"  # Replace with your actual API token
+api_token = "YOURTOKENHERE"  # Replace with your actual API token
 default_output_file = "ip_data.csv"  # Changed default to CSV
 
 # --- Functions ---
