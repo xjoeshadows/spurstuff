@@ -11,7 +11,6 @@ import time # For progress indicator
 
 # --- Configuration ---
 api_url_base = "https://api.spur.us/v2/context/"
-# api_token = "YOUR_API_TOKEN_HERE"  # Removed hardcoded token
 default_output_file = "ip_data.jsonl" # Default output extension
 
 # Set the maximum number of concurrent workers (threads) for API calls
