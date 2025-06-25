@@ -67,11 +67,20 @@ def extract_tag_values(data):
             try:
                 # Load each JSON object separately
                 json_data = json.loads(obj_str)
+                # Assuming 'tag' is the field containing the service metric.
+                # The Service Metrics feed itself is often just a list of strings.
+                # Let's adjust this to handle both cases: a dict with 'tag' or a direct string value.
                 if isinstance(json_data, dict) and 'tag' in json_data:
                     tag_values.append(json_data['tag'])
+                elif isinstance(json_data, str): # If the line is just a string (common for ServiceMetrics)
+                    tag_values.append(json_data)
+                else:
+                    print(f"Warning: Skipping invalid JSON object line or non-tag data: {obj_str[:80]}...", file=sys.stderr)
             except json.JSONDecodeError:
-                # Print a warning for invalid JSON objects but continue processing
-                print(f"Warning: Skipping invalid JSON object line: {obj_str[:80]}...", file=sys.stderr)
+                # If a line is not a valid JSON object, treat it as a raw string if it's not empty
+                if obj_str:
+                    tag_values.append(obj_str)
+                # print(f"Warning: Skipping invalid JSON object line: {obj_str[:80]}...", file=sys.stderr)
                 pass # Skip this line and try the next one
 
         return tag_values
@@ -127,31 +136,43 @@ def main():
     """
     Main function to download, decompress, extract tag values, and count lines.
     """
-    # Use SPUR_TOKEN from environment variable, similar to the other script
-    spur_token = os.environ.get('TOKEN')
-    if not spur_token:
+    # Use TOKEN from environment variable
+    token = os.environ.get('TOKEN')
+    if not token:
         print("Error: TOKEN environment variable not set. Please set the TOKEN environment variable.", file=sys.stderr)
         sys.exit(1)
 
     file_url = 'https://feeds.spur.us/v2/service-metrics/latest.json.gz'
     
     # Generate output filename in YYYYMMDD-ServiceMetricsList.txt format
-    current_date_yy = datetime.datetime.now().strftime("%Y%m%d") # Changed %y to %Y for 4-digit year
-    output_filename = f"{current_date_yy}-ServiceMetricsList.txt"
+    current_date_ymd = datetime.datetime.now().strftime("%Y%m%d") # Changed %y to %Y for 4-digit year
+    output_list_filename = f"{current_date_ymd}-ServiceMetricsList.txt"
+    # New filename for the full decompressed JSON data
+    output_full_json_filename = f"{current_date_ymd}ServiceMetricsAll-Full.json"
 
     print(f"Downloading {file_url}...")
-    file_content = download_file(file_url, spur_token)
+    file_content = download_file(file_url, token)
     if file_content:
         print("File downloaded successfully. Decompressing...")
         decompressed_data = decompress_gzip(file_content)
         if decompressed_data:
+            # Save the full decompressed data to the new .json file
+            print(f"Saving full decompressed data to {output_full_json_filename}...")
+            try:
+                with open(output_full_json_filename, 'wb') as f:
+                    f.write(decompressed_data)
+                print(f"Full decompressed data successfully written to {output_full_json_filename}")
+            except Exception as e:
+                print(f"Error writing full decompressed data to file '{output_full_json_filename}': {e}", file=sys.stderr)
+                # Don't exit, continue with tag extraction if full save fails
+            
             print("Data decompressed. Extracting tag values...")
             tag_values = extract_tag_values(decompressed_data)
             if tag_values:
-                print(f"Tag values extracted. Writing to {output_filename}...")
-                if write_tags_to_file(tag_values, output_filename):
+                print(f"Tag values extracted. Writing to {output_list_filename}...")
+                if write_tags_to_file(tag_values, output_list_filename):
                     print("Tags written successfully. Counting lines...")
-                    get_line_count(output_filename) # Run wc -l and print line count
+                    get_line_count(output_list_filename) # Run wc -l and print line count
                 else:
                     sys.exit(1) # Exit if writing fails
             else:
@@ -166,3 +187,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
