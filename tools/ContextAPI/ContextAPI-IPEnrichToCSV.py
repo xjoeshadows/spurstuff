@@ -6,8 +6,12 @@ import os
 
 # --- Configuration ---
 api_url_base = "https://api.spur.us/v2/context/"
-api_token = "PLACEYOURTOKENHERE"  # Replace with your actual API token
-
+# Retrieve API token from environment variable
+    api_token = os.environ.get("TOKEN")
+    if not api_token:
+        print("Error: TOKEN environment variable not set.", file=sys.stderr)
+        print("Please set it using: export TOKEN='YOUR_API_TOKEN'", file=sys.stderr)
+        sys.exit(1)
 # --- Functions ---
 def enrich_ip(ip_address):
     """Enriches a single IP address using the Spur API."""
