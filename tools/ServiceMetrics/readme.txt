@@ -2,7 +2,7 @@ Tools:
 
 servicemetrics.py: downloads and outputs a file of current ServiceMetrics tracked by Spur
 
-servicemetrics-listandcount.py: will download the latest service metrics feed from spur, perform a line count and report to the user as well as export a list of the service tags to YYYYMMDDServiceMetrics.txt
+servicemetrics-listandcount.py: will download the latest service metrics feed from Spur to YYMMDDServiceMetricsAll-Full.json, perform a line count and report the count to the user as well as export a list of the service tags to YYYYMMDDServiceMetrics.txt for comparison if desired.
 
 servicemetricsdiff.py: will diff two txt file outputs of servicemetrics.py (presumably done on different dates) and create an output highlighting the added and removed tags between them
 
