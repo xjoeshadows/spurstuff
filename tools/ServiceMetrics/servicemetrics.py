@@ -103,7 +103,12 @@ def main():
     """
     Main function to download, decompress, and extract tag values.
     """
-    spur_token = "PUT_YOUR_API_TOKEN_HERE"  # Hardcoded SPUR API Token
+    # Use TOKEN from environment variable
+    token = os.environ.get('TOKEN')
+    if not token:
+        print("Error: TOKEN environment variable not set. Please set the TOKEN environment variable.", file=sys.stderr)
+        sys.exit(1)
+        
     file_url = 'https://feeds.spur.us/v2/service-metrics/latest.json.gz'
     
     # Prompt the user for the output filename
@@ -114,7 +119,7 @@ def main():
         output_filename = "servicetags.txt"
         print(f"No filename provided. Using default: {output_filename}")
 
-    file_content = download_file(file_url, spur_token)
+    file_content = download_file(file_url, token)
     if file_content:
         decompressed_data = decompress_gzip(file_content)
         if decompressed_data:
