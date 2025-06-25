@@ -9,11 +9,11 @@ import csv
 # --- Configuration ---
 api_url_base = "https://api.spur.us/v2/context/"
 # Retrieve API token from environment variable
-    api_token = os.environ.get("TOKEN")
-    if not api_token:
-        print("Error: TOKEN environment variable not set.", file=sys.stderr)
-        print("Please set it using: export TOKEN='YOUR_API_TOKEN'", file=sys.stderr)
-        sys.exit(1)
+api_token = os.environ.get("TOKEN")
+if not api_token:
+    print("Error: TOKEN environment variable not set.", file=sys.stderr)
+    print("Please set it using: export TOKEN='YOUR_API_TOKEN'", file=sys.stderr)
+    sys.exit(1)
 default_output_file = "ip_data.csv"  # Changed default to CSV
 
 # --- Functions ---
