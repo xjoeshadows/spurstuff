@@ -7,7 +7,7 @@ import re # Import regular expression module for egrep functionality
 
 # --- Configuration ---
 DOWNLOAD_URL = "https://feeds.spur.us/v2/service-metrics/latest.json.gz"
-API_TOKEN = "YOUR_API_TOKEN_HERE"  # Replace with your actual API token
+API_TOKEN = os.environ.get('TOKEN')  # Use TOKEN from environment variable
 DEFAULT_RAW_OUTPUT_FILENAME = "service_metrics_latest.json"
 DEFAULT_GREP_OUTPUT_FILENAME = "filtered_metrics.txt"
 
