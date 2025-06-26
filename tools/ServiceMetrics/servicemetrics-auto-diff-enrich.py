@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import sys
 import requests
 import json
@@ -9,11 +10,20 @@ import time
 import datetime
 import re
 import gzip # Import the gzip module
+import io # Import io for BytesIO, used in decompress_gzip if reading from memory stream
+
+# --- Optional: For Tab Completion on macOS/Linux ---
+try:
+    import readline
+    import glob
+    _READLINE_AVAILABLE = True
+except ImportError:
+    _READLINE_AVAILABLE = False
+# --- End Optional Import ---
 
 # --- Configuration ---
 API_URL_BASE = "https://api.spur.us/v2/metadata/tags/"
-# Use TOKEN from environment variable
-API_TOKEN = os.environ.get('TOKEN')
+API_TOKEN = os.environ.get('TOKEN')  # Use TOKEN from environment variable
 
 MAX_WORKERS = 10  # Number of concurrent API requests. Adjust based on API rate limits.
 REQUEST_TIMEOUT = 15 # Timeout for each API request in seconds
@@ -32,7 +42,44 @@ HTTP = requests.Session()
 HTTP.mount("https://", ADAPTER)
 HTTP.mount("http://", ADAPTER)
 
-# --- Functions from servicemetrics-listall.py (adapted) ---
+# --- Helper Functions ---
+# --- Tab Completion Helper ---
+def complete_path(text, state):
+    """
+    Callback for readline to provide path completions.
+    """
+    if '~' in text:
+        text = os.path.expanduser(text)
+    if os.path.isdir(text):
+        matches = [os.path.join(text, f) for f in os.listdir(text)]
+    else:
+        dirname = os.path.dirname(text)
+        basename = os.path.basename(text)
+        if not dirname: # If no directory given, search current
+            dirname = '.'
+        
+        # Ensure dirname ends with a slash if it's a directory
+        # This prevents 'dirfile' from becoming 'dir/file' prematurely
+        if os.path.isdir(dirname) and not dirname.endswith(os.sep):
+            dirname += os.sep
+
+        # Use glob to find matches for the pattern
+        all_matches = glob.glob(dirname + basename + '*')
+        
+        # Filter for files/directories that actually exist and match the prefix
+        matches = [m for m in all_matches if m.startswith(dirname + basename) or m.startswith(text)]
+
+    # Add a slash to directories for better completion
+    matches = [m + os.sep if os.path.isdir(m) and not m.endswith(os.sep) else m for m in matches]
+    
+    # Sort and return the match for the given state
+    if state < len(matches):
+        return matches[state]
+    else:
+        return None
+# --- End Tab Completion Helper ---
+
+
 def download_file(url, token, output_path):
     """
     Downloads a file from the specified URL and saves it to output_path.
@@ -49,7 +96,7 @@ def download_file(url, token, output_path):
     try:
         print(f"Downloading file from {url} to {output_path}...")
         response = requests.get(url, headers=headers)
-        response.raise_for_status()  # Raise an exception for bad status codes
+        response.raise_for_status()  # Corrected: Was raise_or_status()
         with open(output_path, 'wb') as f:
             f.write(response.content)
         print(f"Successfully downloaded {output_path}")
@@ -75,12 +122,13 @@ def decompress_gzip(gz_file_path, output_dir=None):
     
     # Construct the output filename by removing .gz and potentially adding .json if not present
     base_name = os.path.basename(gz_file_path)
-    if base_name.endswith('.gz'):
+    if base_name.lower().endswith('.gz'):
         decompressed_name = base_name[:-3] # Remove .gz
-        if not decompressed_name.endswith('.json'): # Ensure .json extension
+        # Add .json extension if it's missing or if the name implies another format (like .json.gz -> .json)
+        if not decompressed_name.lower().endswith('.json'): 
             decompressed_name += '.json'
-    else: # Should not happen if gz_file_path is correctly named, but as a fallback
-        decompressed_name = base_name + '.json' # Assume it should be json if no gz
+    else: # Fallback if gz_file_path doesn't end with .gz but is expected to be gzipped JSON
+        decompressed_name = base_name + '.json'
         
     decompressed_path = os.path.join(output_dir, decompressed_name)
 
@@ -101,7 +149,8 @@ def decompress_gzip(gz_file_path, output_dir=None):
 def extract_tag_values_from_json_file(file_path):
     """
     Extracts the values from a JSON file.
-    This function is specifically adapted for Service Metrics feed, which is a list of strings.
+    This function is specifically adapted for Service Metrics feed, which can be a list of strings
+    or JSONL where each line has a 'tag' field.
 
     Args:
         file_path (str): The path to the JSON file.
@@ -112,10 +161,9 @@ def extract_tag_values_from_json_file(file_path):
     tags = []
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
-            # Read the entire file content as it's a single JSON array or JSON Lines
             content = f.read().strip()
             
-            # Attempt to load as a single JSON array (expected for Service Metrics)
+            # Attempt 1: Load as a single JSON array (expected for primary Service Metrics feed)
             try:
                 data = json.loads(content)
                 if isinstance(data, list):
@@ -124,30 +172,28 @@ def extract_tag_values_from_json_file(file_path):
                     if len(tags) != len(data):
                         print(f"Warning: Some non-string items found in JSON array in {file_path}. Skipping them.", file=sys.stderr)
                 else:
-                    print(f"Warning: Expected a JSON array of strings in {file_path}, but got type {type(data)}. Attempting line-by-line parsing.", file=sys.stderr)
-                    # Fallback to line-by-line for potential JSON Lines with simple strings if primary parse fails
+                    print(f"Warning: Expected a JSON array of strings in {file_path}, but got type {type(data)}. Trying line-by-line.", file=sys.stderr)
                     for line_num, line in enumerate(content.split('\n'), 1):
                         line = line.strip()
                         if line:
-                            # Try to parse each line as a string, or simple JSON value
                             try:
                                 parsed_line = json.loads(line)
                                 if isinstance(parsed_line, str):
                                     tags.append(parsed_line)
+                                elif isinstance(parsed_line, dict) and 'tag' in parsed_line:
+                                    tags.append(parsed_line['tag'])
                                 else:
-                                    print(f"Warning: Line {line_num} in {file_path} is not a simple string or string JSON value. Skipping: {line[:80]}...", file=sys.stderr)
+                                    print(f"Warning: Line {line_num} in {file_path} is valid JSON but not a simple string or dict with 'tag'. Skipping: {line[:80]}...", file=sys.stderr)
                             except json.JSONDecodeError:
-                                # If it's not valid JSON, treat it as a raw string if it's not empty
                                 tags.append(line)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e_full_parse:
                 # If the entire file is not a single JSON array, try parsing line by line
-                print(f"Warning: File {file_path} is not a single valid JSON array. Attempting line-by-line parsing for potential JSON Lines.", file=sys.stderr)
+                print(f"Warning: File {file_path} is not a single valid JSON array ({e_full_parse}). Attempting line-by-line parsing for potential JSON Lines.", file=sys.stderr)
                 for line_num, line in enumerate(content.split('\n'), 1):
                     line = line.strip()
                     if not line:
                         continue
                     try:
-                        # Try to load each line as a JSON object, specifically looking for 'tag' field
                         json_data = json.loads(line)
                         if isinstance(json_data, dict) and 'tag' in json_data:
                             tags.append(json_data['tag'])
@@ -166,26 +212,6 @@ def extract_tag_values_from_json_file(file_path):
         return None
     except Exception as e:
         print(f"Error reading and processing {file_path}: {e}", file=sys.stderr)
-        return None
-
-# --- Functions from servicemetricsdiff-enriched.py ---
-# Note: read_tags_from_file is now effectively replaced by extract_tag_values_from_json_file
-# but kept here if other parts of the script were to call it expecting a .txt file of tags.
-# For this specific script, we're always dealing with JSON files that get their tags extracted.
-def read_tags_from_file(filename):
-    """
-    Reads tags from a file, one tag per line. This is a placeholder/legacy from original,
-    main logic uses extract_tag_values_from_json_file for Service Metrics JSON.
-    """
-    try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            tags = [line.strip() for line in f if line.strip()]
-        return tags
-    except FileNotFoundError:
-        print(f"Error: File not found: {filename}", file=sys.stderr)
-        return None
-    except Exception as e:
-        print(f"Error reading file {filename}: {e}", file=sys.stderr)
         return None
 
 def compare_tag_lists(tags1, tags2):
@@ -287,8 +313,6 @@ def main():
     # 1. Download the latest Service Metrics feed
     current_date_ymd = datetime.datetime.now().strftime("%Y%m%d")
     latest_gz_filename = f"{current_date_ymd}-ServiceMetricsList.json.gz"
-    # Ensure the decompressed file name correctly matches what gzip produces (e.g., ends in .json)
-    latest_decompressed_filename = f"{current_date_ymd}-ServiceMetricsList.json"
     service_metrics_url = 'https://feeds.spur.us/v2/service-metrics/latest.json.gz'
 
     downloaded_gz_path = download_file(service_metrics_url, API_TOKEN, latest_gz_filename)
@@ -300,6 +324,14 @@ def main():
     if not latest_tags_file:
         print("Failed to decompress the latest Service Metrics feed. Exiting.", file=sys.stderr)
         sys.exit(1)
+    else:
+        # Delete the .gz file after successful decompression
+        try:
+            os.remove(downloaded_gz_path)
+            print(f"Deleted temporary gzipped file: {downloaded_gz_path}")
+        except OSError as e:
+            print(f"Error deleting gzipped file {downloaded_gz_path}: {e}", file=sys.stderr)
+
 
     # Load tags from the newly downloaded file
     tags_latest = extract_tag_values_from_json_file(latest_tags_file)
@@ -310,7 +342,18 @@ def main():
     print(f"Latest Service Metrics file: {latest_tags_file}")
 
     # 2. Ask the user for another file to compare with
-    comparison_file_path = input("\nPlease enter the full path to the comparison Service Metrics file (e.g., '/path/to/20240501-ServiceMetricsList.json'): ").strip()
+    print("\n--- Select Comparison File ---")
+    print("Tip: If your terminal supports it, you can drag and drop the file from your file explorer into the terminal window for easy path entry.")
+    
+    if _READLINE_AVAILABLE:
+        print("On macOS/Linux, you might be able to use tab completion for paths.")
+        readline.set_completer_delims(' \t\n;')
+        readline.parse_and_bind("tab: complete")
+        readline.set_completer(complete_path)
+    else:
+        print("Note: Tab completion is not available. Please type the full path.")
+
+    comparison_file_path = input("Path: ").strip()
 
     if not os.path.exists(comparison_file_path):
         print(f"Error: Comparison file '{comparison_file_path}' not found. Exiting.", file=sys.stderr)
@@ -345,12 +388,12 @@ def main():
         print("No new tags found to enrich. Exiting.")
         sys.exit(0)
 
-    # 4. Determine output filename based on both dates
+    # 4. Determine output filename based on both dates (for enrichment results)
     latest_file_date = get_date_from_filename_or_creation(latest_tags_file)
     comparison_file_date = get_date_from_filename_or_creation(comparison_file_path)
 
-    # Output filename: YYYYMMDD-YYYYMMDDServiceMetricsDiff.jsonl
-    output_filename = f"{latest_file_date}-{comparison_file_date}ServiceMetricsDiff.jsonl"
+    # Output filename: comparison_file_date-latest_file_dateSMDiffEnriched.jsonl
+    output_filename = f"{comparison_file_date}-{latest_file_date}SMDiffEnriched.jsonl"
     output_path = os.path.join(os.getcwd(), output_filename) 
 
     print(f"\nStarting enrichment for {len(tags_to_enrich)} added tags in parallel...")
