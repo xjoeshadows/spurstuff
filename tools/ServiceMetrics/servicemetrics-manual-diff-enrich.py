@@ -9,7 +9,7 @@ import time
 
 # --- Configuration ---
 API_URL_BASE = "https://api.spur.us/v2/metadata/tags/"
-API_TOKEN = "HNRDfEWuYGCvuD3I1hCPsK"  # Replace with your actual API token
+API_TOKEN = os.environ.get('TOKEN')  # Use TOKEN from environment variable
 DEFAULT_OUTPUT_FILE = "added_tags_enrichment.jsonl"
 
 MAX_WORKERS = 10  # Number of concurrent API requests. Adjust based on API rate limits.
