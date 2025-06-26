@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import requests
 import os # Import os for environment variables
 import sys # Import sys for exiting on critical errors
