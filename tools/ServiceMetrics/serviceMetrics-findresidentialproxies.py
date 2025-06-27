@@ -5,13 +5,19 @@ import os
 import sys
 from io import BytesIO
 import re # Import regular expression module for egrep functionality
+import datetime # Import datetime for date formatting
 
 # --- Configuration ---
 DOWNLOAD_URL = "https://feeds.spur.us/v2/service-metrics/latest.json.gz"
 # Use TOKEN from environment variable
 API_TOKEN = os.environ.get('TOKEN')
-DEFAULT_RAW_OUTPUT_FILENAME = "service_metrics_latest.json"
-DEFAULT_GREP_OUTPUT_FILENAME = "filtered_metrics.txt"
+
+# Get current date in YYYYMMDD format
+current_date_ymd = datetime.datetime.now().strftime("%Y%m%d")
+
+# Dynamically set default output filenames based on current date
+DEFAULT_RAW_OUTPUT_FILENAME = f"{current_date_ymd}ServiceMetricsAll.json"
+DEFAULT_GREP_OUTPUT_FILENAME = f"{current_date_ymd}ServiceMetrics-Residential.json"
 
 # Keywords for egrep-like filtering
 # The re.IGNORECASE flag makes the search case-insensitive
@@ -56,7 +62,7 @@ def write_content_to_file(content, output_path):
     try:
         with open(output_path, 'w', encoding='utf-8') as outfile:
             outfile.write(content)
-        print(f"Raw content written to: {output_path}")
+        print(f"Content written to: {output_path}")
         return True
     except Exception as e:
         print(f"Error writing content to '{output_path}': {e}", file=sys.stderr)
@@ -80,46 +86,26 @@ def filter_content_and_write(input_content, keywords_pattern, output_path):
         print(f"Error filtering and writing to '{output_path}': {e}", file=sys.stderr)
         return False
 
-def get_output_filename(prompt_message, default_filename, expected_extension):
-    """
-    Prompts the user for an output filename, sanitizes it, and ensures correct extension.
-    """
-    filename = input(prompt_message).strip()
-    if not filename:
-        print(f"No filename provided. Using default: {default_filename}")
-        return default_filename
-    else:
-        sanitized_filename = "".join(x for x in filename if x.isalnum() or x in "._-")
-        if not sanitized_filename.lower().endswith(expected_extension):
-            sanitized_filename += expected_extension
-        return sanitized_filename
-
 # --- Main Script ---
 if __name__ == "__main__":
+    if API_TOKEN is None:
+        print("Error: TOKEN environment variable not set. Please set the TOKEN environment variable.", file=sys.stderr)
+        sys.exit(1)
+
     # --- Step 1: Download and Decompress ---
     print("--- Starting Download and Decompression ---")
     decompressed_data = download_and_decompress_gz(DOWNLOAD_URL, API_TOKEN)
     if decompressed_data is None:
         sys.exit(1)
 
-    # --- Step 2: Get filename for raw downloaded content and write it ---
-    raw_output_filename = get_output_filename(
-        f"Enter filename for the raw downloaded content (e.g., {DEFAULT_RAW_OUTPUT_FILENAME}): ",
-        DEFAULT_RAW_OUTPUT_FILENAME,
-        ".json" # Assuming the decompressed content is JSON
-    )
-    raw_output_path = os.path.join(os.getcwd(), raw_output_filename) # Save in current directory
+    # --- Step 2: Write raw downloaded content ---
+    raw_output_path = os.path.join(os.getcwd(), DEFAULT_RAW_OUTPUT_FILENAME) # Save in current directory
 
     if not write_content_to_file(decompressed_data, raw_output_path):
         sys.exit(1)
 
-    # --- Step 3: Get filename for filtered content and write it ---
-    grep_output_filename = get_output_filename(
-        f"Enter filename for the filtered (grep) output (e.g., {DEFAULT_GREP_OUTPUT_FILENAME}): ",
-        DEFAULT_GREP_OUTPUT_FILENAME,
-        ".txt"
-    )
-    grep_output_path = os.path.join(os.getcwd(), grep_output_filename) # Save in current directory
+    # --- Step 3: Filter content and write it ---
+    grep_output_path = os.path.join(os.getcwd(), DEFAULT_GREP_OUTPUT_FILENAME) # Save in current directory
 
     print(f"\n--- Starting Content Filtering for keywords: {', '.join(FILTER_KEYWORDS)} ---")
     if not filter_content_and_write(decompressed_data, FILTER_PATTERN, grep_output_path):
