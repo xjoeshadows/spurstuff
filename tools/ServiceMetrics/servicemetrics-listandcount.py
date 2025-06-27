@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import requests
 import gzip
 import json
@@ -148,7 +149,7 @@ def main():
     current_date_ymd = datetime.datetime.now().strftime("%Y%m%d") # Changed %y to %Y for 4-digit year
     output_list_filename = f"{current_date_ymd}-ServiceMetricsList.txt"
     # New filename for the full decompressed JSON data
-    output_full_json_filename = f"{current_date_ymd}ServiceMetricsAll-Full.json"
+    output_full_json_filename = f"{current_date_ymd}ServiceMetricsAll.json"
 
     print(f"Downloading {file_url}...")
     file_content = download_file(file_url, token)
