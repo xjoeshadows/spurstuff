@@ -16,10 +16,10 @@ API_TOKEN = os.environ.get('TOKEN') # Use TOKEN from environment variable
 
 # Default filename for the raw decompressed service metrics feed
 # This will be YYYYMMDDServiceMetricsFull.json
-DEFAULT_RAW_OUTPUT_FILENAME_TEMPLATE = "{}ServiceMetricsAll.json" 
+DEFAULT_RAW_OUTPUT_FILENAME_TEMPLATE = "{}ServiceMetricsFull.json" 
 
 # Default prefix for the filtered output filename (e.g., YYYYMMDDServiceMetrics)
-DEFAULT_FILTERED_OUTPUT_FILENAME_PREFIX_TEMPLATE = "{}_ServiceMetrics" 
+DEFAULT_FILTERED_OUTPUT_FILENAME_PREFIX_TEMPLATE = "{}ServiceMetrics" 
 
 # --- Functions ---
 def flatten_json(json_data, parent_key='', sep='_'):
@@ -137,7 +137,7 @@ def get_output_filename_with_defaults(default_prefix, filter_column_name=None, f
     """
     default_name_parts = [default_prefix]
     
-    # Only include column name in default filename if a specific column was chosen for filtering
+    # Include column name in default filename
     if filter_column_name:
         sanitized_col_name = re.sub(r'[^a-zA-Z0-9]', '', filter_column_name).title()
         if sanitized_col_name:
@@ -174,7 +174,7 @@ if __name__ == "__main__":
     # --- Step 1: Download and Decompress ---
     print("--- Starting Download and Decompression ---")
     
-    # Default raw output filename is YYYYMMDDServiceMetricsAll.json
+    # Default raw output filename is YYYYMMDDServiceMetricsFull.json
     raw_output_filename = DEFAULT_RAW_OUTPUT_FILENAME_TEMPLATE.format(current_date_ymd)
     raw_output_path = os.path.join(os.getcwd(), raw_output_filename) 
 
@@ -191,67 +191,87 @@ if __name__ == "__main__":
     filter_keywords_input = None
     keywords = [] # Initialize keywords list
 
-    # Always ask for keywords, regardless of column filtering choice
-    filter_keywords_input = input("\nEnter keywords to search for across the file (comma-separated, e.g., 'malicious,trojan'): ").strip()
-    if filter_keywords_input: # Only proceed with filter options if keywords are provided
-        keywords = [kw.strip().lower() for kw in filter_keywords_input.split(',') if kw.strip()]
-        if not keywords: # If keywords input was just spaces or commas
-            print("No valid keywords provided. Proceeding without filtering.", file=sys.stderr)
-            perform_filter = 'N' # Effectively no filter
+    # First, ask if they want to filter by a specific column
+    perform_column_specific_filter = input("\nDo you want to filter by a specific column (Y/N)? ").strip().upper()
+
+    if perform_column_specific_filter == 'Y':
+        # Sample data to suggest column names for filtering
+        print("\n--- Analyzing sample data for filterable columns ---")
+        sample_lines = []
+        for line in decompressed_data.splitlines()[:100]: # Read first 100 lines to sample
+            line_stripped = line.strip()
+            if line_stripped:
+                sample_lines.append(line_stripped)
+
+        suggested_keys = set()
+        for line in sample_lines:
+            try:
+                obj = json.loads(line)
+                flattened_obj = flatten_json(obj)
+                suggested_keys.update(flattened_obj.keys())
+            except json.JSONDecodeError:
+                pass
+
+        if suggested_keys:
+            print("\nAvailable columns for filtering (flattened names, sampled from first 100 lines):")
+            for key in sorted(list(suggested_keys)):
+                print(f"  - {key}")
+            print("\n")
         else:
-            # If keywords are provided, then ask about column-specific filtering
-            perform_column_specific_filter = input("Do you want to filter by a specific column (Y/N)? ").strip().upper()
-            if perform_column_specific_filter == 'Y':
-                # Sample data to suggest column names for filtering
-                print("\n--- Analyzing sample data for filterable columns ---")
-                sample_lines = []
-                for line in decompressed_data.splitlines()[:100]: # Read first 100 lines to sample
-                    line_stripped = line.strip()
-                    if line_stripped:
-                        sample_lines.append(line_stripped)
+            print("\nCould not determine column names from sample. Please enter column name carefully.")
 
-                suggested_keys = set()
-                for line in sample_lines:
-                    try:
-                        obj = json.loads(line)
-                        flattened_obj = flatten_json(obj)
-                        suggested_keys.update(flattened_obj.keys())
-                    except json.JSONDecodeError:
-                        pass
-
-                if suggested_keys:
-                    print("\nAvailable columns for filtering (flattened names, sampled from first 100 lines):")
-                    for key in sorted(list(suggested_keys)):
-                        print(f"  - {key}")
-                    print("\n")
-                else:
-                    print("\nCould not determine column names from sample. Please enter column name carefully.")
-
-                filter_column = input("Enter the exact column name to filter (e.g., 'client_behaviors', 'ip', 'organization'): ").strip()
-                if not filter_column:
-                    print("No column name provided. Reverting to general keyword search.", file=sys.stderr)
-                    # If column not provided, revert to general search (filter_column remains None)
-            elif perform_column_specific_filter == 'N':
-                print("Proceeding with general keyword search across entire lines.", file=sys.stderr)
-                # filter_column remains None
+        filter_column = input("Enter the exact column name to filter (e.g., 'client_behaviors', 'ip', 'organization'): ").strip()
+        if not filter_column:
+            print("No column name provided. Reverting to general keyword search.", file=sys.stderr)
+            # filter_column remains None, so it will do general search
+            # Then proceed to ask for general keywords
+            filter_keywords_input = input("Enter keywords to search for across the file (comma-separated, e.g., 'malicious,trojan'): ").strip()
+        else:
+            # If column is provided, ask for keywords for that column
+            filter_keywords_input = input(f"Enter keywords to filter by for column '{filter_column}' (comma-separated, e.g., 'malicious,trojan'): ").strip()
+        
+        # Determine if filtering will actually occur based on keywords
+        if filter_keywords_input:
+            keywords = [kw.strip().lower() for kw in filter_keywords_input.split(',') if kw.strip()]
+            if not keywords:
+                print("No valid keywords provided. No filtering will be performed. All records will be exported.", file=sys.stderr)
+                perform_filter = 'N'
             else:
-                print("Invalid response for column filtering. Reverting to general keyword search.", file=sys.stderr)
-                # filter_column remains None
-    else: # If no keywords were provided at all
-        print("No keywords provided. No filtering will be performed. All records will be exported.", file=sys.stderr)
-        # filter_column remains None, keywords remains empty, so no filtering will happen in process_chunk_for_filtering
+                perform_filter = 'Y'
+        else:
+            print("No keywords provided. No filtering will be performed. All records will be exported.", file=sys.stderr)
+            perform_filter = 'N'
+
+    elif perform_column_specific_filter == 'N':
+        print("Proceeding with general keyword search across entire lines.", file=sys.stderr)
+        # filter_column remains None
+        filter_keywords_input = input("Enter keywords to search for across the file (comma-separated, e.g., 'malicious,trojan'): ").strip()
+        
+        if filter_keywords_input:
+            keywords = [kw.strip().lower() for kw in filter_keywords_input.split(',') if kw.strip()]
+            if not keywords:
+                print("No valid keywords provided. No filtering will be performed. All records will be exported.", file=sys.stderr)
+                perform_filter = 'N'
+            else:
+                perform_filter = 'Y'
+        else:
+            print("No keywords provided. No filtering will be performed. All records will be exported.", file=sys.stderr)
+            perform_filter = 'N'
+    else:
+        print("Invalid response for column filtering choice. No filtering will be performed. All records will be exported.", file=sys.stderr)
+        perform_filter = 'N'
 
     # --- Step 4: Get filename for filtered content (JSONL) ---
     # Default filename now includes current date, "ServiceMetrics", and keywords if filtering is performed
     filtered_output_filename = get_output_filename_with_defaults(
         DEFAULT_FILTERED_OUTPUT_FILENAME_PREFIX_TEMPLATE.format(current_date_ymd),
-        filter_column if filter_column else None, # Pass column only if it's explicitly chosen
-        filter_keywords_input if keywords else None # Pass keywords input only if actual keywords exist
+        filter_column if perform_filter == 'Y' and filter_column else None, # Pass column only if it's explicitly chosen AND filtering is active
+        filter_keywords_input if perform_filter == 'Y' and keywords else None # Pass keywords input only if filtering is active AND actual keywords exist
     )
     filtered_output_path = os.path.join(os.getcwd(), filtered_output_filename)
 
     print(f"\n--- Starting Content Filtering ---")
-    if keywords: # Check if there are actual keywords to filter by
+    if perform_filter == 'Y': # Check if any filtering is active
         if filter_column:
             print(f"Filtering content from '{raw_output_path}' based on column '{filter_column}' and keywords '{filter_keywords_input}'...")
         else:
@@ -281,7 +301,7 @@ if __name__ == "__main__":
     try:
         with open(filtered_output_path, 'w', encoding='utf-8') as outfile:
             with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_PARALLEL_PROCESSORS) as executor:
-                # Submit tasks for each chunk of data
+                # Submit tasks for each chunk
                 futures = [executor.submit(process_chunk_for_filtering, chunk, filter_column, keywords) for chunk in chunks_data]
                 
                 for future in concurrent.futures.as_completed(futures):
