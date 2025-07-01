@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import json
 import csv
 import sys
@@ -76,17 +77,24 @@ if __name__ == "__main__":
 
     # Determine output directory (same as input file's directory)
     output_dir = os.path.dirname(input_file_path)
+    # Get base name of input file without its extension
+    base_input_filename = os.path.splitext(os.path.basename(input_file_path))[0]
 
     # Prompt user for output filename
-    output_file_name = input("Enter the desired output file name (e.g., csv_export.csv): ").strip()
+    # Default suggested filename is based on input filename with .csv extension
+    default_output_filename = f"{base_input_filename}.csv"
+    output_file_name_prompt = f"Enter the desired output file name (e.g., {default_output_filename}): "
+    
+    output_file_name = input(output_file_name_prompt).strip()
+    
     if not output_file_name:
-        # Use a default filename if user input is empty
-        output_file_path = os.path.join(output_dir, "csv_export.csv")
-        print(f"Using default output file name: csv_export.csv")
+        # Use default filename if user input is empty
+        output_file_path = os.path.join(output_dir, default_output_filename)
+        print(f"Using default output file name: {default_output_filename}")
     else:
         # Sanitize filename and ensure .csv extension
         output_file_name = "".join(x for x in output_file_name if x.isalnum() or x in "._-")
-        if not output_file_name.endswith(".csv"):
+        if not output_file_name.lower().endswith(".csv"):
             output_file_name += ".csv"
         output_file_path = os.path.join(output_dir, output_file_name)
 
