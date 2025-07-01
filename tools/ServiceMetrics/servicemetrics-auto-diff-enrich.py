@@ -87,7 +87,7 @@ def download_file(url, token, output_path):
     Args:
         url (str): The URL of the file to download.
         token (str): The API authentication token.
-        output_path (str): The path to save the downloaded file (e.g., 'YYYYMMDD-ServiceMetricsList.json.gz').
+        output_path (str): The path to save the downloaded file (e.g., 'YYYYMMDD-ServiceMetricsAll.json.gz').
 
     Returns:
         str: The path to the downloaded file, or None on error.
@@ -312,7 +312,7 @@ def main():
 
     # 1. Download the latest Service Metrics feed
     current_date_ymd = datetime.datetime.now().strftime("%Y%m%d")
-    latest_gz_filename = f"{current_date_ymd}-ServiceMetricsList.json.gz"
+    latest_gz_filename = f"{current_date_ymd}-ServiceMetricsAll.json.gz"
     service_metrics_url = 'https://feeds.spur.us/v2/service-metrics/latest.json.gz'
 
     downloaded_gz_path = download_file(service_metrics_url, API_TOKEN, latest_gz_filename)
