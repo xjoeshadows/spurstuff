@@ -1,8 +1,8 @@
 A collection of tools to interact with the Context API. Substitute your own token for the placeholder in the scripts.
 
-ContextAPI-IPEnrichToJSON.py: Enriches a list of IPs in a CSV, outputs to JSONL.
+ContextAPI-IPEnrichToJSON.py: Enriches a list of IPs in a txt file, variable workers for parallel requests, outputs to JSONL.
 
-ContextAPIEnrich-FlexibleCSV-JSONL.py: Enriches a CSV with variable columns to JSONL, variable workers for parallel requests.
+ContextAPIEnrich-FlexibleCSV-JSONL.py: Enriches a CSV with variable columns to JSONL, variable workers for parallel requests, outputs to JSONL.
 
 ContextAPIEnrich-IPs-Timestamps-CSV.py: Enriches a list of IPs and Timestamps in a CSV, outputs to CSV.
 
