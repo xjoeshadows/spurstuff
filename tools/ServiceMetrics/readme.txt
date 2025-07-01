@@ -10,6 +10,8 @@ servicemetrics-manual-diff-enrich.py: will do a diff the same as the previous di
 
 servicemetrics-auto-diff-enrich.py: will download the newest list of service tags, ask the user for an older service tags list file to compare against, do a diff, and then enrich each of the added tags against the tag lookup API and output a jsonl of the details for each tag.
 
+serviceMetrics-customfilter.py: A custom keyword parser you can use against the service metric feed file. This script will download a new copy of the feed first, prompt if the the user would like to search against a specific column, if yes then asks for the keyword and output filename, if no then just asks for the keyword and the output filename.
+
 serviceMetrics-findbadservices.py: a script that will download the complete service metrics feed, decompress it, grep it for malicious|malware|trojan, and export the services with those words in their description to a jsonl file
 
 serviceMetrics-findresidentialproxies.py: Will download the latest ServiceMetrics feed and grep for "residential_proxy" to help find interesting res proxy services.
