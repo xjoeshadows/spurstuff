@@ -4,4 +4,4 @@ feedsandqueries.py: Will prompt the user to either download a new feed file or r
 
 customfeedfilter.py: will prompt the user to either download the latest of one of Spur's feeds or provide your own, choose a column, and set a keyword filter to parse againt the feed file. Outputs to a new .jsonl file.
 
-customfeedmultifilter.py: same as the above script, but allows for specifying multiple columns and keywords to parse for. Also adds a completion timer to the end of the script.
+customfeedmultifilter.py: same as the above script, but allows for specifying multiple columns and keywords to parse for. Also added a completion timer to the end of the script.
