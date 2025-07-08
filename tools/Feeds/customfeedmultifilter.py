@@ -8,6 +8,9 @@ import re
 import concurrent.futures # Still useful for as_completed
 import multiprocessing # For true CPU parallelism
 import time
+import requests # For downloading feeds
+import gzip # For decompressing feeds
+from io import BytesIO # For handling decompressed data in memory
 
 # --- Configuration ---
 # API Token for downloading feeds (if chosen by user)
@@ -49,16 +52,16 @@ def flatten_json(json_data, parent_key='', sep='_'):
 def get_output_filename(current_date_ymd, base_feed_name, filter_criteria):
     """
     Prompts the user for an output filename, offering a default based on filter criteria.
-    The format is YYYYMMDD[inputfilename]Column1Keyword1Column2Keyword2.jsonl
+    The format is YYYYMMDD[inputfilename]Key1Keyword1Key2Keyword2.jsonl
     """
     filename_parts = [current_date_ymd, base_feed_name]
     
     if filter_criteria: # Only append filter parts if filtering is active
-        for col_name, kws in filter_criteria:
-            if col_name: # If it's a column-specific filter
-                sanitized_col_name = re.sub(r'[^a-zA-Z0-9]', '', col_name).title()
-                if sanitized_col_name:
-                    filename_parts.append(sanitized_col_name)
+        for key_name, kws in filter_criteria:
+            if key_name: # If it's a key-specific filter
+                sanitized_key_name = re.sub(r'[^a-zA-Z0-9]', '', key_name).title()
+                if sanitized_key_name:
+                    filename_parts.append(sanitized_key_name)
             
             # Keywords are always present in the filter_criteria tuple if the condition was added
             if kws:
@@ -133,14 +136,14 @@ def process_file_chunk(filepath, start_byte, end_byte, filter_criteria):
                 
                 # Apply all filter criteria (logical AND)
                 all_conditions_met = True
-                for col_name, kws in filter_criteria:
-                    if col_name: # Column-specific filter
+                for key_name, kws in filter_criteria: # Changed col_name to key_name
+                    if key_name: # Key-specific filter
                         flattened_obj = flatten_json(json_obj) # Flatten to access nested keys
-                        column_value = str(flattened_obj.get(col_name, '')).lower() # Get value, convert to string, lowercase
-                        if not all(kw in column_value for kw in kws): # Logical AND for keywords within this column
+                        key_value = str(flattened_obj.get(key_name, '')).lower() # Changed column_value to key_value
+                        if not all(kw in key_value for kw in kws): # Logical AND for keywords within this key
                             all_conditions_met = False
                             break # No need to check other conditions for this object
-                    else: # General line-based filter (no specific column)
+                    else: # General line-based filter (no specific key)
                         if not all(kw in line_stripped.lower() for kw in kws): # Logical AND for keywords within this line
                             all_conditions_met = False
                             break # No need to check other conditions for this object
@@ -157,6 +160,11 @@ def process_file_chunk(filepath, start_byte, end_byte, filter_criteria):
             if current_byte >= end_byte: # Stop if we've passed the end_byte
                 break
     return matching_objects
+
+# Helper function for multiprocessing pool to call process_file_chunk
+def _process_chunk_for_pool(chunk_args):
+    """Wrapper function to unpack arguments for process_file_chunk."""
+    return process_file_chunk(*chunk_args)
 
 def download_and_decompress_gz_to_file(url, token, output_path):
     """
@@ -201,6 +209,28 @@ def download_and_decompress_gz_to_file(url, token, output_path):
         print(f"An unexpected error occurred during download/decompression: {e}", file=sys.stderr)
         return None
 
+def download_raw_file_to_disk(url, token, output_path):
+    """
+    Downloads a raw file (e.g., .mmdb) from the given URL and saves it to output_path.
+    """
+    headers = {"Token": token}
+    try:
+        print(f"Downloading raw file from: {url}")
+        response = requests.get(url, headers=headers, stream=True)
+        response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
+
+        with open(output_path, 'wb') as outfile:
+            for chunk in response.iter_content(chunk_size=8192):
+                outfile.write(chunk)
+        print(f"Successfully downloaded raw file to: {output_path}")
+        return output_path
+    except requests.exceptions.RequestException as e:
+        print(f"Error during raw file download: {e}", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"An unexpected error occurred during raw file download: {e}", file=sys.stderr)
+        return None
+
 # --- Main Script Logic ---
 if __name__ == "__main__":
     script_start_time = time.time() # Record script start time
@@ -226,7 +256,8 @@ if __name__ == "__main__":
         print(f"Using provided file: {decompressed_source_file_path}")
 
         # Attempt to extract date and feed name from the provided filename
-        match = re.search(r'(\d{8})(AnonRes|AnonResRT|Anonymous)\.json$', os.path.basename(provided_file_path))
+        # Expanded regex to include IPGeoMMDB and IPGeoJSON for existing file naming
+        match = re.search(r'(\d{8})(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
         if match:
             current_date_ymd = match.group(1)
             base_feed_name = match.group(2)
@@ -241,9 +272,11 @@ if __name__ == "__main__":
 
     elif use_existing_file_input == 'N':
         feed_options = {
-            "1": {"name": "AnonRes", "url": "https://feeds.spur.us/v2/anonymous-residential/latest.json.gz", "base_feed_name": "AnonRes"},
-            "2": {"name": "AnonRes Realtime", "url": "https://feeds.spur.us/v2/anonymous-residential/realtime/latest.json.gz", "base_feed_name": "AnonResRT"},
-            "3": {"name": "Anonymous", "url": "https://feeds.spur.us/v2/anonymous/latest.json.gz", "base_feed_name": "Anonymous"},
+            "1": {"name": "AnonRes", "url": "https://feeds.spur.us/v2/anonymous-residential/latest.json.gz", "base_feed_name": "AnonRes", "needs_decompression": True, "output_ext": ".json"},
+            "2": {"name": "AnonRes Realtime", "url": "https://feeds.spur.us/v2/anonymous-residential/realtime/latest.json.gz", "base_feed_name": "AnonResRT", "needs_decompression": True, "output_ext": ".json"},
+            "3": {"name": "Anonymous", "url": "https://feeds.spur.us/v2/anonymous/latest.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json"},
+            "4": {"name": "IPGeo (MMDB)", "url": "https://feeds.spur.us/v2/ipgeo/latest.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb"},
+            "5": {"name": "IPGeo (JSON)", "url": "https://feeds.spur.us/v2/ipgeo/latest.json.gz", "base_feed_name": "IPGeoJSON", "needs_decompression": True, "output_ext": ".json"},
         }
 
         selected_feed = None
@@ -259,9 +292,16 @@ if __name__ == "__main__":
 
         api_url = selected_feed["url"]
         base_feed_name = selected_feed["base_feed_name"]
+        needs_decompression = selected_feed["needs_decompression"]
+        output_ext = selected_feed["output_ext"]
 
-        gz_filename_for_download = f"{current_date_ymd}{base_feed_name}.json.gz"
-        decompressed_source_file_path = download_and_decompress_gz_to_file(api_url, os.environ.get('TOKEN'), gz_filename_for_download)
+        download_filename = f"{current_date_ymd}{base_feed_name}"
+        if needs_decompression:
+            download_filename += ".json.gz" # Original gzipped name
+            decompressed_source_file_path = download_and_decompress_gz_to_file(api_url, os.environ.get('TOKEN'), download_filename)
+        else:
+            download_filename += output_ext # For MMDB, this is the final file name
+            decompressed_source_file_path = download_raw_file_to_disk(api_url, os.environ.get('TOKEN'), download_filename)
         
         if decompressed_source_file_path is None:
             print("Failed to download or decompress the feed. Exiting.", file=sys.stderr)
@@ -271,27 +311,34 @@ if __name__ == "__main__":
         print("Invalid response. Please answer 'Y' or 'N'. Exiting.", file=sys.stderr)
         sys.exit(1)
 
+    # Validate that the source file is now available and is a JSON file for parsing
     if not decompressed_source_file_path or not os.path.exists(decompressed_source_file_path):
         print(f"Critical Error: Source data file '{decompressed_source_file_path}' could not be located or created. Exiting.", file=sys.stderr)
         sys.exit(1)
+    
+    # Check if the file is a JSON file, as the rest of the script assumes JSON parsing
+    if not decompressed_source_file_path.lower().endswith('.json'):
+        print(f"Error: The selected feed '{os.path.basename(decompressed_source_file_path)}' is not a JSON file. This script can only filter JSON feeds.", file=sys.stderr)
+        print("Please select a JSON feed or provide an existing JSON file.", file=sys.stderr)
+        sys.exit(1)
 
     # --- Step 2: Get user input for filtering ---
-    filter_criteria = [] # List to store (column_name, [keywords]) tuples
+    filter_criteria = [] # List to store (key_name, [keywords]) tuples
     
     perform_initial_filter_choice = input("\nDo you want to filter the data? (Y/N): ").strip().upper()
 
     if perform_initial_filter_choice == 'Y':
         while True:
-            current_filter_column = None
+            current_filter_key = None 
             current_keywords_input = None
             current_keywords = []
 
-            # Ask if they want to filter by a specific column for THIS filter condition
-            perform_column_specific_filter_choice = input("  Filter by a specific column for this condition (Y/N)? ").strip().upper()
+            # Ask if they want to filter by a specific key for THIS filter condition
+            perform_key_specific_filter_choice = input("  Filter by a specific key (Y/N)? ").strip().upper() 
 
-            if perform_column_specific_filter_choice == 'Y':
-                # Sample data to suggest column names for filtering
-                print("\n--- Analyzing sample data for filterable columns ---")
+            if perform_key_specific_filter_choice == 'Y':
+                # Sample data to suggest key names for filtering
+                print("\n--- Analyzing sample data for filterable keys ---") 
                 sample_lines = []
                 try:
                     with open(decompressed_source_file_path, 'r', encoding='utf-8') as f_sample:
@@ -313,23 +360,23 @@ if __name__ == "__main__":
                         pass
 
                 if suggested_keys:
-                    print("\nAvailable columns for filtering (flattened names, sampled from first few lines):")
+                    print("\nAvailable keys for filtering (flattened names, sampled from first few lines):") 
                     for key in sorted(list(suggested_keys)):
                         print(f"  - {key}")
                     print("\n")
                 else:
-                    print("\nCould not determine column names from sample. Please enter column name carefully.")
+                    print("\nCould not determine key names from sample. Please enter key name carefully.") 
 
-                current_filter_column = input("  Enter the exact column name for this filter: ").strip()
-                if not current_filter_column:
-                    print("  No column name provided for this filter. Skipping this filter condition.", file=sys.stderr)
+                current_filter_key = input("  Enter the exact key name for this filter (e.g., 'client_behaviors', 'ip', 'organization'): ").strip()
+                if not current_filter_key:
+                    print("  No key name provided for this filter. Skipping this filter condition.", file=sys.stderr)
                     continue # Skip to next iteration of while loop
 
-                current_keywords_input = input(f"  Enter keywords for column '{current_filter_column}' (comma-separated, e.g., 'malicious,trojan'): ").strip()
+                current_keywords_input = input(f"  Enter keywords for key '{current_filter_key}' (comma-separated, e.g., 'malicious,trojan'): ").strip()
             
-            elif perform_column_specific_filter_choice == 'N':
+            elif perform_key_specific_filter_choice == 'N':
                 current_keywords_input = input("  Enter keywords for general search across lines (comma-separated, e.g., 'malicious,trojan'): ").strip()
-                # current_filter_column remains None for general search
+                # current_filter_key remains None for general search
             else:
                 print("  Invalid response. Skipping this filter condition.", file=sys.stderr)
                 continue # Skip to next iteration of while loop
@@ -337,8 +384,8 @@ if __name__ == "__main__":
             if current_keywords_input:
                 current_keywords = [kw.strip().lower() for kw in current_keywords_input.split(',') if kw.strip()]
                 if current_keywords:
-                    filter_criteria.append((current_filter_column, current_keywords))
-                    print(f"  Added filter: Column='{current_filter_column if current_filter_column else 'Any'}', Keywords='{', '.join(current_keywords)}'")
+                    filter_criteria.append((current_filter_key, current_keywords))
+                    print(f"  Added filter: Key='{current_filter_key if current_filter_key else 'Any'}', Keywords='{', '.join(current_keywords)}'")
                 else:
                     print("  No valid keywords provided for this filter condition. Skipping.", file=sys.stderr)
             else:
@@ -355,14 +402,10 @@ if __name__ == "__main__":
         perform_filter = 'Y' # Filtering will be done
 
     # --- Step 3: Get filename for filtered content (JSONL) ---
-    # Use the first filter's info for default filename, or general if no specific column filters
-    first_filter_column_name = filter_criteria[0][0] if filter_criteria and filter_criteria[0][0] else None
-    first_filter_keywords_input = ','.join(filter_criteria[0][1]) if filter_criteria and filter_criteria[0][1] else None
-
     filtered_output_filename = get_output_filename(
-        current_date_ymd, # Pass current_date_ymd
-        base_feed_name,   # Pass base_feed_name
-        filter_criteria if perform_filter == 'Y' else [] # Pass filter_criteria list directly
+        current_date_ymd, 
+        base_feed_name,   
+        filter_criteria if perform_filter == 'Y' else []
     )
     output_file_path = os.path.join(os.getcwd(), filtered_output_filename)
 
@@ -383,24 +426,24 @@ if __name__ == "__main__":
         with open(output_file_path, 'w', encoding='utf-8') as outfile:
             chunks = get_file_chunks(decompressed_source_file_path, NUM_PARALLEL_PROCESSORS)
             
-            with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_PARALLEL_PROCESSORS) as executor: # Changed to ThreadPoolExecutor
-                # Pass the entire filter_criteria list to the chunk processor
-                futures = [executor.submit(process_file_chunk, decompressed_source_file_path, start, end, filter_criteria) for start, end in chunks]
+            # Use multiprocessing.Pool for true CPU parallelism
+            with multiprocessing.Pool(processes=NUM_PARALLEL_PROCESSORS) as pool:
+                # Map the process_file_chunk function to each chunk
+                # pool.imap_unordered is used to get results as they complete, which is good for streaming
+                results_iterator = pool.imap_unordered(
+                    _process_chunk_for_pool, # Use the top-level wrapper function
+                    [(decompressed_source_file_path, start, end, filter_criteria) for start, end in chunks]
+                )
                 
-                for future in concurrent.futures.as_completed(futures):
-                    try:
-                        matching_objects_in_chunk = future.result()
-                        for obj in matching_objects_in_chunk:
-                            outfile.write(json.dumps(obj, ensure_ascii=False) + '\n')
-                            records_exported_count += 1
-                        
-                        if records_exported_count % 1000 == 0:
-                            elapsed_time = time.time() - start_time
-                            records_per_second = records_exported_count / elapsed_time if elapsed_time > 0 else 0
-                            print(f"  Exported {records_exported_count} records ({records_per_second:.2f} records/s) - {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))} elapsed")
-
-                    except Exception as exc:
-                        print(f"Error processing chunk: {exc}", file=sys.stderr)
+                for matching_objects_in_chunk in results_iterator:
+                    for obj in matching_objects_in_chunk:
+                        outfile.write(json.dumps(obj, ensure_ascii=False) + '\n')
+                        records_exported_count += 1
+                    
+                    if records_exported_count % 1000 == 0:
+                        elapsed_time = time.time() - start_time
+                        records_per_second = records_exported_count / elapsed_time if elapsed_time > 0 else 0
+                        print(f"  Exported {records_exported_count} records ({records_per_second:.2f} records/s) - {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))} elapsed")
         
         print(f"Successfully exported {records_exported_count} records to {output_file_path}.")
 
