@@ -52,7 +52,7 @@ def flatten_json(json_data, parent_key='', sep='_'):
 def get_output_filename(current_date_ymd, base_feed_name, filter_criteria):
     """
     Prompts the user for an output filename, offering a default based on filter criteria.
-    The format is YYYYMMDD[inputfilename]Key1Keyword1Key2Keyword2.jsonl
+    The format is YYYYMMDD[inputfilename]Key1Keyword1Key2Keyword2.json
     """
     filename_parts = [current_date_ymd, base_feed_name]
     
@@ -70,7 +70,7 @@ def get_output_filename(current_date_ymd, base_feed_name, filter_criteria):
                 if sanitized_keywords:
                     filename_parts.append("".join(sanitized_keywords))
     
-    default_filename = "".join(filename_parts) + ".jsonl"
+    default_filename = "".join(filename_parts) + ".json"
     
     prompt_message = f"Enter the desired output file name (e.g., {default_filename}): "
     user_output_filename = input(prompt_message).strip()
@@ -80,8 +80,8 @@ def get_output_filename(current_date_ymd, base_feed_name, filter_criteria):
         return default_filename
     else:
         sanitized_filename = "".join(x for x in user_output_filename if x.isalnum() or x in "._-")
-        if not sanitized_filename.lower().endswith(".jsonl"):
-            sanitized_filename += ".jsonl"
+        if not sanitized_filename.lower().endswith(".json"):
+            sanitized_filename += ".json"
         return sanitized_filename
 
 def get_file_chunks(filepath, num_chunks):
@@ -108,13 +108,15 @@ def get_file_chunks(filepath, num_chunks):
             chunks.append((start_byte, end_byte))
     return chunks
 
-def process_file_chunk(filepath, start_byte, end_byte, filter_criteria):
+def process_file_chunk(args_tuple): # Modified to accept a single tuple argument
     """
     Processes a specific byte range (chunk) of a file,
     filters JSON objects based on multiple criteria (logical AND),
     and returns matching ones.
     This function is designed to be run in a separate process.
     """
+    filepath, start_byte, end_byte, filter_criteria = args_tuple # Unpack arguments
+    
     matching_objects = []
     # Open with 'errors=ignore' for robustness against corrupted parts in large files
     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
@@ -136,10 +138,10 @@ def process_file_chunk(filepath, start_byte, end_byte, filter_criteria):
                 
                 # Apply all filter criteria (logical AND)
                 all_conditions_met = True
-                for key_name, kws in filter_criteria: # Changed col_name to key_name
+                for key_name, kws in filter_criteria:
                     if key_name: # Key-specific filter
                         flattened_obj = flatten_json(json_obj) # Flatten to access nested keys
-                        key_value = str(flattened_obj.get(key_name, '')).lower() # Changed column_value to key_value
+                        key_value = str(flattened_obj.get(key_name, '')).lower() # Get value, convert to string, lowercase
                         if not all(kw in key_value for kw in kws): # Logical AND for keywords within this key
                             all_conditions_met = False
                             break # No need to check other conditions for this object
@@ -160,11 +162,6 @@ def process_file_chunk(filepath, start_byte, end_byte, filter_criteria):
             if current_byte >= end_byte: # Stop if we've passed the end_byte
                 break
     return matching_objects
-
-# Helper function for multiprocessing pool to call process_file_chunk
-def _process_chunk_for_pool(chunk_args):
-    """Wrapper function to unpack arguments for process_file_chunk."""
-    return process_file_chunk(*chunk_args)
 
 def download_and_decompress_gz_to_file(url, token, output_path):
     """
@@ -401,7 +398,7 @@ if __name__ == "__main__":
     else:
         perform_filter = 'Y' # Filtering will be done
 
-    # --- Step 3: Get filename for filtered content (JSONL) ---
+    # --- Step 3: Get filename for filtered content (JSON) ---
     filtered_output_filename = get_output_filename(
         current_date_ymd, 
         base_feed_name,   
@@ -413,7 +410,17 @@ if __name__ == "__main__":
     if perform_filter == 'Y':
         print(f"Filtering content from '{decompressed_source_file_path}' based on {len(filter_criteria)} criteria (logical AND)...")
     else:
-        print(f"No filtering requested. All records from '{decompressed_source_file_path}' will be written to '{output_file_path}'.")
+        # If no filtering, the decompressed_source_file_path is the final output.
+        # No new file creation or copying is needed.
+        print(f"No filtering requested. The output file is: '{decompressed_source_file_path}'.")
+        print("Script finished.")
+        # Calculate and print total completion time (for download/decompression only)
+        script_end_time = time.time()
+        total_elapsed_seconds = script_end_time - script_start_time
+        minutes = int(total_elapsed_seconds // 60)
+        seconds = int(total_elapsed_seconds % 60)
+        print(f"\nTotal script execution time: {minutes} Minutes {seconds} Seconds")
+        sys.exit(0) # Exit gracefully as no further processing is needed
 
     # --- Step 4: Perform Parallel Streaming Filtering and Writing ---
     records_exported_count = 0
@@ -431,25 +438,31 @@ if __name__ == "__main__":
                 # Map the process_file_chunk function to each chunk
                 # pool.imap_unordered is used to get results as they complete, which is good for streaming
                 results_iterator = pool.imap_unordered(
-                    _process_chunk_for_pool, # Use the top-level wrapper function
-                    [(decompressed_source_file_path, start, end, filter_criteria) for start, end in chunks]
+                    process_file_chunk, # Pass the function directly
+                    [(decompressed_source_file_path, start, end, filter_criteria) for start, end in chunks] # Pass arguments as tuples
                 )
                 
                 for matching_objects_in_chunk in results_iterator:
-                    for obj in matching_objects_in_chunk:
-                        outfile.write(json.dumps(obj, ensure_ascii=False) + '\n')
-                        records_exported_count += 1
-                    
-                    if records_exported_count % 1000 == 0:
-                        elapsed_time = time.time() - start_time
-                        records_per_second = records_exported_count / elapsed_time if elapsed_time > 0 else 0
-                        print(f"  Exported {records_exported_count} records ({records_per_second:.2f} records/s) - {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))} elapsed")
-        
-        print(f"Successfully exported {records_exported_count} records to {output_file_path}.")
+                    # The 'try' block for processing chunk results should be here,
+                    # and its 'except' should be at the same indentation level.
+                    try: 
+                        for obj in matching_objects_in_chunk:
+                            outfile.write(json.dumps(obj, ensure_ascii=False) + '\n')
+                            records_exported_count += 1
+                        
+                        if records_exported_count % 1000 == 0:
+                            elapsed_time = time.time() - start_time
+                            records_per_second = records_exported_count / elapsed_time if elapsed_time > 0 else 0
+                            print(f"  Exported {records_exported_count} records ({records_per_second:.2f} records/s) - {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))} elapsed")
 
-    except Exception as e:
-        print(f"Error during streaming export to {output_file_path}: {e}", file=sys.stderr)
-        sys.exit(1)
+                    except Exception as exc: # This is the correct indentation for this except
+                        print(f"Error processing chunk result: {exc}", file=sys.stderr)
+            
+            print(f"Successfully exported {records_exported_count} records to {output_file_path}.")
+
+    except Exception as e: # This outer try/except is for file operations or pool creation
+            print(f"Error during streaming export to {output_file_path}: {e}", file=sys.stderr)
+            sys.exit(1)
 
     print("\nScript finished.")
 
