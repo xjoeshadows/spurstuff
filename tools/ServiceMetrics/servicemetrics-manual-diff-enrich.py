@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import sys
 import requests
 import json
@@ -6,11 +7,14 @@ import concurrent.futures
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import time
+import datetime # Import datetime for date handling
+import re     # Import re for regex operations
 
 # --- Configuration ---
 API_URL_BASE = "https://api.spur.us/v2/metadata/tags/"
-API_TOKEN = os.environ.get('TOKEN')  # Use TOKEN from environment variable
-DEFAULT_OUTPUT_FILE = "added_tags_enrichment.jsonl"
+# Use TOKEN from environment variable
+API_TOKEN = os.environ.get('TOKEN')
+# DEFAULT_OUTPUT_FILE = "added_tags_enrichment.jsonl" # This will be dynamically generated now
 
 MAX_WORKERS = 10  # Number of concurrent API requests. Adjust based on API rate limits.
 REQUEST_TIMEOUT = 15 # Timeout for each API request in seconds
@@ -118,6 +122,26 @@ def write_to_jsonl_stream(results_iterator, output_path):
         print(f"Error writing to JSON Lines file: {e}", file=sys.stderr)
         sys.exit(1)
 
+def get_date_from_filename_or_creation(file_path):
+    """
+    Attempts to extract YYYYMMDD from filename. If not found, uses file modification date.
+    """
+    filename = os.path.basename(file_path)
+    # Check for YYYYMMDD pattern at the beginning of the filename (e.g., 20240101-...)
+    match = re.match(r'^(\d{8})', filename)
+    if match:
+        return match.group(1)
+    else:
+        try:
+            # Fallback to file modification time (st_mtime) as it's more consistently available
+            mod_timestamp = os.path.getmtime(file_path)
+            dt_object = datetime.datetime.fromtimestamp(mod_timestamp)
+            return dt_object.strftime("%Y%m%d")
+        except Exception as e:
+            print(f"Warning: Could not extract date from filename or file modification time for {filename}. Using current date.", file=sys.stderr)
+            return datetime.datetime.now().strftime("%Y%m%d")
+
+
 def main():
     """
     Main function to compare tag lists from two files and enrich added tags.
@@ -156,11 +180,21 @@ def main():
         print("No new tags found to enrich. Exiting.")
         sys.exit(0)
 
+    # Get dates from input files for default output filename
+    file1_date = get_date_from_filename_or_creation(file1)
+    file2_date = get_date_from_filename_or_creation(file2)
+
+    # Default output filename: file1_date-file2_dateSMDiffEnriched.jsonl
+    # Assuming file1 is the 'old' and file2 is the 'new' for diff context
+    default_output_filename = f"{file1_date}-{file2_date}SMDiffEnriched.jsonl"
+
     # Prompt for output filename
-    output_file_name = input("Enter the desired output JSONL file name (e.g., enriched_tags.jsonl): ").strip()
+    output_file_name_prompt = f"Enter the desired output JSONL file name (e.g., {default_output_filename}): ".strip()
+    output_file_name = input(output_file_name_prompt).strip()
+
     if not output_file_name:
-        output_path = DEFAULT_OUTPUT_FILE
-        print(f"Using default output file name: {DEFAULT_OUTPUT_FILE}")
+        output_path = os.path.join(os.getcwd(), default_output_filename)
+        print(f"Using default output file name: {default_output_filename}")
     else:
         output_file_name = "".join(x for x in output_file_name if x.isalnum() or x in "._-")
         if not output_file_name.lower().endswith(".jsonl"):
@@ -173,8 +207,6 @@ def main():
     # Use ThreadPoolExecutor for parallel API calls
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         # Submit enrichment tasks for each added tag
-        # executor.map is suitable here as we don't need original tag for error reporting within loop
-        # and results_iterator handles streaming
         results_iterator = executor.map(enrich_tag_metadata, tags_to_enrich)
         
         # Stream the results directly to the JSONL file
