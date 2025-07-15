@@ -15,3 +15,5 @@ serviceMetrics-customfilter.py: A custom keyword parser you can use against the 
 serviceMetrics-findbadservices.py: a script that will download the complete service metrics feed, decompress it, grep it for malicious|malware|trojan, and export the services with those words in their description to a jsonl file
 
 serviceMetrics-findresidentialproxies.py: Will download the latest ServiceMetrics feed and grep for "residential_proxy" to help find interesting res proxy services.
+
+servicemetrics-listmaker.py: will convert a full Service Metrics feed file into a list of service tags which can be used by any of these scripts where the script takes an input file of service tags, e.g. servicemetrics-manual-diff-enrich.py
