@@ -361,7 +361,7 @@ if __name__ == "__main__":
                 sample_lines = []
                 try:
                     with open(decompressed_source_file_path, 'r', encoding='utf-8') as f_sample:
-                        for _ in range(10): # Read first 10 lines to sample
+                        for _ in range(100): # Read first 10 lines to sample
                             line = f_sample.readline()
                             if not line: break
                             sample_lines.append(line)
