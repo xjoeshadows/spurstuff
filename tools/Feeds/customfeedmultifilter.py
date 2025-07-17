@@ -139,16 +139,54 @@ def process_file_chunk(args_tuple): # Modified to accept a single tuple argument
                 # Apply all filter criteria (logical AND)
                 all_conditions_met = True
                 for key_name, kws in filter_criteria:
+                    source_value_raw = ""
                     if key_name: # Key-specific filter
-                        flattened_obj = flatten_json(json_obj) # Flatten to access nested keys
-                        key_value = str(flattened_obj.get(key_name, '')).lower() # Get value, convert to string, lowercase
-                        if not all(kw in key_value for kw in kws): # Logical AND for keywords within this key
-                            all_conditions_met = False
-                            break # No need to check other conditions for this object
-                    else: # General line-based filter (no specific key)
-                        if not all(kw in line_stripped.lower() for kw in kws): # Logical AND for keywords within this line
-                            all_conditions_met = False
-                            break # No need to check other conditions for this object
+                        flattened_obj = flatten_json(json_obj)
+                        source_value_raw = str(flattened_obj.get(key_name, ''))
+                    else: # General line-based filter
+                        source_value_raw = line_stripped
+
+                    # Check if ALL keywords for this criterion match the source_value
+                    current_criterion_matches = True
+                    for kw in kws:
+                        # Try to parse as numerical condition
+                        # Regex: (operator)? (optional whitespace) (optional negative sign) (digits) (optional decimal and digits)
+                        num_match = re.match(r'([<>]?=?)\s*(\-?\d+(\.\d+)?)$', kw, re.IGNORECASE)
+                        
+                        if num_match:
+                            operator = num_match.group(1)
+                            target_num_str = num_match.group(2)
+                            
+                            try:
+                                target_num = float(target_num_str)
+                                actual_num = float(source_value_raw) # Attempt to convert source value to number
+                                
+                                # Perform numerical comparison
+                                if operator == '>':
+                                    if not (actual_num > target_num): current_criterion_matches = False; break
+                                elif operator == '<':
+                                    if not (actual_num < target_num): current_criterion_matches = False; break
+                                elif operator == '>=':
+                                    if not (actual_num >= target_num): current_criterion_matches = False; break
+                                elif operator == '<=':
+                                    if not (actual_num <= target_num): current_criterion_matches = False; break
+                                elif operator == '=' or operator == '': # '=' or no operator means exact match
+                                    if not (actual_num == target_num): current_criterion_matches = False; break
+                                # No '!=' operator support for now, but could be added
+                            except ValueError:
+                                # If source_value_raw or target_num_str cannot be converted to a number,
+                                # this numerical condition cannot be met for this line/key.
+                                current_criterion_matches = False
+                                break # This specific keyword didn't match numerically
+                            
+                        else: # Not a numerical condition, perform case-insensitive substring match
+                            if kw not in source_value_raw.lower():
+                                current_criterion_matches = False
+                                break # This specific keyword didn't match as substring
+                    
+                    if not current_criterion_matches:
+                        all_conditions_met = False
+                        break # If any keyword within a criterion fails, the whole criterion fails, and thus all_conditions_met fails.
                 
                 if all_conditions_met:
                     matching_objects.append(json_obj)
@@ -254,7 +292,7 @@ if __name__ == "__main__":
 
         # Attempt to extract date and feed name from the provided filename
         # Expanded regex to include IPGeoMMDB and IPGeoJSON for existing file naming
-        match = re.search(r'(\d{8})(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetrics)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
+        match = re.search(r'(\d{8})(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetrics|DCH)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
         if match:
             current_date_ymd = match.group(1)
             base_feed_name = match.group(2)
@@ -275,9 +313,10 @@ if __name__ == "__main__":
             "4": {"name": "IPGeo (MMDB - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False},
             "5": {"name": "IPGeo (JSON - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.json.gz", "base_feed_name": "IPGeoJSON", "needs_decompression": True, "output_ext": ".json", "is_historical": False},
             "6": {"name": "Service Metrics (Latest)", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetrics", "needs_decompression": True, "output_ext": ".json", "is_historical": False},
-            "7": {"name": "Anonymous (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.json.gz", "base_feed_name": "AnonymousHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True},
-            "8": {"name": "AnonRes (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/0000.json.gz", "base_feed_name": "AnonResHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True},
-            "9": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True},
+            "7": {"name": "Data Center Hosting (DCH) (Latest)", "url": "https://feeds.spur.us/v2/dch/latest.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": False}, # New DCH Feed
+            "H1": {"name": "Anonymous (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.json.gz", "base_feed_name": "AnonymousHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True},
+            "H2": {"name": "AnonRes (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/0000.json.gz", "base_feed_name": "AnonResHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True},
+            "H3": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True},
         }
 
         selected_feed = None
