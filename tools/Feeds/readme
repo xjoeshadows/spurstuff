@@ -2,6 +2,4 @@ dailyfeedcounts.py: Will grab the line count of each of the feeds, report them t
 
 feedsandqueries.py: Will prompt the user to either download a new feed file or reference an existing file. Then will prompt the user for which feed they would like to download, followed by running queries against it including a shuf command, export all queries to .txt files, and convert them to csv. May expect filenames of provided files to include YYYYMMDD and the type of feed, e.g. AnonRes, Anonymous, or AnonResRT.
 
-customfeedfilter.py: will prompt the user to either download the latest of one of Spur's feeds or provide your own, choose a column, and set a keyword filter to parse againt the feed file. Outputs to a new .jsonl file.
-
 customfeedmultifilter.py: same as the above script, but allows for specifying multiple columns and keywords to parse for. Also added a completion timer to the end of the script.
