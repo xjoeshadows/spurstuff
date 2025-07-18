@@ -49,7 +49,7 @@ def flatten_json(json_data, parent_key='', sep='_'):
             items.append((new_key, v))
     return dict(items)
 
-def get_output_filename(current_date_ymd, base_feed_name, filter_criteria):
+def get_output_filename(current_date_ymd, base_feed_name, filter_criteria, overall_match_type):
     """
     Prompts the user for an output filename, offering a default based on filter criteria.
     The format is YYYYMMDD[inputfilename]Key1Keyword1Key2Keyword2.jsonl
@@ -57,19 +57,25 @@ def get_output_filename(current_date_ymd, base_feed_name, filter_criteria):
     filename_parts = [current_date_ymd, base_feed_name]
     
     if filter_criteria: # Only append filter parts if filtering is active
-        for key_name, kws in filter_criteria:
+        for i, criterion in enumerate(filter_criteria):
+            key_name = criterion['key']
+            kws = criterion['keywords']
+            match_type_keywords = criterion['match_type_keywords']
+
             if key_name: # If it's a key-specific filter
                 sanitized_key_name = re.sub(r'[^a-zA-Z0-9]', '', key_name).title()
                 if sanitized_key_name:
                     filename_parts.append(sanitized_key_name)
             
-            # Keywords are always present in the filter_criteria tuple if the condition was added
             if kws:
-                # Sanitize and title-case each keyword, then join them
                 sanitized_keywords = [re.sub(r'[^a-zA-Z0-9]', '', kw).title() for kw in kws][:3] # Take up to 3 keywords
                 if sanitized_keywords:
                     filename_parts.append("".join(sanitized_keywords))
-    
+            
+            # Add AND/OR indicator if multiple criteria and not the last one
+            if len(filter_criteria) > 1 and i < len(filter_criteria) - 1:
+                filename_parts.append(overall_match_type.upper())
+
     default_filename = "".join(filename_parts) + ".jsonl"
     
     prompt_message = f"Enter the desired output file name (e.g., {default_filename}): "
@@ -108,96 +114,116 @@ def get_file_chunks(filepath, num_chunks):
             chunks.append((start_byte, end_byte))
     return chunks
 
-def process_file_chunk(args_tuple): # Modified to accept a single tuple argument
+def process_file_chunk(args_tuple):
     """
     Processes a specific byte range (chunk) of a file,
-    filters JSON objects based on multiple criteria (logical AND),
+    filters JSON objects based on multiple criteria (logical AND/OR),
     and returns matching ones.
     This function is designed to be run in a separate process.
     """
-    filepath, start_byte, end_byte, filter_criteria = args_tuple # Unpack arguments
+    filepath, start_byte, end_byte, filter_criteria, overall_match_type = args_tuple
     
     matching_objects = []
-    # Open with 'errors=ignore' for robustness against corrupted parts in large files
     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
         f.seek(start_byte)
         
-        # Read until end_byte or EOF
         current_byte = start_byte
         for line in f:
             line_stripped = line.strip()
-            current_byte += len(line.encode('utf-8')) # Account for newline char and multi-byte chars
+            current_byte += len(line.encode('utf-8'))
             
             if not line_stripped:
-                if current_byte >= end_byte: # Stop if we've passed the end_byte
+                if current_byte >= end_byte:
                     break
                 continue
             
             try:
                 json_obj = json.loads(line_stripped)
                 
-                # Apply all filter criteria (logical AND)
-                all_conditions_met = True
-                for key_name, kws in filter_criteria:
+                # Evaluate each filter criterion
+                criterion_results = [] # Stores True/False for each filter condition
+                for criterion in filter_criteria:
+                    key_name = criterion['key']
+                    kws = criterion['keywords']
+                    match_type_keywords = criterion['match_type_keywords']
+
                     source_value_raw = ""
-                    if key_name: # Key-specific filter
+                    if key_name:
                         flattened_obj = flatten_json(json_obj)
                         source_value_raw = str(flattened_obj.get(key_name, ''))
-                    else: # General line-based filter
+                    else:
                         source_value_raw = line_stripped
 
-                    # Check if ALL keywords for this criterion match the source_value
-                    current_criterion_matches = True
-                    for kw in kws:
-                        # Try to parse as numerical condition
-                        # Regex: (operator)? (optional whitespace) (optional negative sign) (digits) (optional decimal and digits)
-                        num_match = re.match(r'([<>]?=?)\s*(\-?\d+(\.\d+)?)$', kw, re.IGNORECASE)
-                        
-                        if num_match:
-                            operator = num_match.group(1)
-                            target_num_str = num_match.group(2)
-                            
-                            try:
-                                target_num = float(target_num_str)
-                                actual_num = float(source_value_raw) # Attempt to convert source value to number
-                                
-                                # Perform numerical comparison
-                                if operator == '>':
-                                    if not (actual_num > target_num): current_criterion_matches = False; break
-                                elif operator == '<':
-                                    if not (actual_num < target_num): current_criterion_matches = False; break
-                                elif operator == '>=':
-                                    if not (actual_num >= target_num): current_criterion_matches = False; break
-                                elif operator == '<=':
-                                    if not (actual_num <= target_num): current_criterion_matches = False; break
-                                elif operator == '=' or operator == '': # '=' or no operator means exact match
-                                    if not (actual_num == target_num): current_criterion_matches = False; break
-                                # No '!=' operator support for now, but could be added
-                            except ValueError:
-                                # If source_value_raw or target_num_str cannot be converted to a number,
-                                # this numerical condition cannot be met for this line/key.
-                                current_criterion_matches = False
-                                break # This specific keyword didn't match numerically
-                            
-                        else: # Not a numerical condition, perform case-insensitive substring match
-                            if kw not in source_value_raw.lower():
-                                current_criterion_matches = False
-                                break # This specific keyword didn't match as substring
+                    # Evaluate keywords within this single criterion
+                    current_kws_match_status = False # Default for OR, will be True for AND
+                    if match_type_keywords == 'AND':
+                        current_kws_match_status = True # Assume true, set false if any fails
+                        for kw in kws:
+                            num_match = re.match(r'([<>]?=?)\s*(\-?\d+(\.\d+)?)$', kw, re.IGNORECASE)
+                            if num_match:
+                                operator = num_match.group(1)
+                                target_num_str = num_match.group(2)
+                                try:
+                                    target_num = float(target_num_str)
+                                    actual_num = float(source_value_raw)
+                                    if operator == '>':
+                                        if not (actual_num > target_num): current_kws_match_status = False; break
+                                    elif operator == '<':
+                                        if not (actual_num < target_num): current_kws_match_status = False; break
+                                    elif operator == '>=':
+                                        if not (actual_num >= target_num): current_kws_match_status = False; break
+                                    elif operator == '<=':
+                                        if not (actual_num <= target_num): current_kws_match_status = False; break
+                                    elif operator == '=' or operator == '':
+                                        if not (actual_num == target_num): current_kws_match_status = False; break
+                                except ValueError:
+                                    current_kws_match_status = False; break
+                            else: # Not numerical, perform substring match
+                                if kw.lower() not in source_value_raw.lower(): # Case-insensitive substring match
+                                    current_kws_match_status = False; break
+                    elif match_type_keywords == 'OR':
+                        current_kws_match_status = False # Assume false, set true if any passes
+                        for kw in kws:
+                            num_match = re.match(r'([<>]?=?)\s*(\-?\d+(\.\d+)?)$', kw, re.IGNORECASE)
+                            if num_match:
+                                operator = num_match.group(1)
+                                target_num_str = num_match.group(2)
+                                try:
+                                    target_num = float(target_num_str)
+                                    actual_num = float(source_value_raw)
+                                    if operator == '>':
+                                        if (actual_num > target_num): current_kws_match_status = True; break
+                                    elif operator == '<':
+                                        if (actual_num < target_num): current_kws_match_status = True; break
+                                    elif operator == '>=':
+                                        if (actual_num >= target_num): current_kws_match_status = True; break
+                                    elif operator == '<=':
+                                        if (actual_num <= target_num): current_kws_match_status = True; break
+                                    elif operator == '=' or operator == '':
+                                        if (actual_num == target_num): current_kws_match_status = True; break
+                                except ValueError:
+                                    pass # Continue to next keyword if numerical comparison fails
+                            else: # Not numerical, perform substring match
+                                if kw.lower() in source_value_raw.lower(): # Case-insensitive substring match
+                                    current_kws_match_status = True; break
                     
-                    if not current_criterion_matches:
-                        all_conditions_met = False
-                        break # If any keyword within a criterion fails, the whole criterion fails, and thus all_conditions_met fails.
+                    criterion_results.append(current_kws_match_status)
+
+                # Combine results of all criteria based on overall_match_type
+                final_match = False
+                if overall_match_type == 'AND':
+                    final_match = all(criterion_results)
+                elif overall_match_type == 'OR':
+                    final_match = any(criterion_results)
                 
-                if all_conditions_met:
+                if final_match:
                     matching_objects.append(json_obj)
-            except json.JSONDecodeError as e_line:
-                # Suppress detailed error for performance/clean output in parallel processing
+            except json.JSONDecodeError:
                 pass 
-            except Exception as e_other:
-                # Suppress detailed error for performance/clean output in parallel processing
+            except Exception:
                 pass
             
-            if current_byte >= end_byte: # Stop if we've passed the end_byte
+            if current_byte >= end_byte:
                 break
     return matching_objects
 
@@ -209,14 +235,14 @@ def download_and_decompress_gz_to_file(url, token, output_path):
     try:
         print(f"Downloading from: {url}")
         response = requests.get(url, headers=headers, stream=True)
-        response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
+        response.raise_for_status()
 
         with open(output_path, 'wb') as outfile:
             for chunk in response.iter_content(chunk_size=8192):
                 outfile.write(chunk)
         print(f"Successfully downloaded gzipped file to: {output_path}")
 
-        decompressed_file_path = os.path.splitext(output_path)[0] # Remove .gz extension
+        decompressed_file_path = os.path.splitext(output_path)[0]
         if not decompressed_file_path.lower().endswith('.json'):
             decompressed_file_path += '.json'
 
@@ -226,14 +252,13 @@ def download_and_decompress_gz_to_file(url, token, output_path):
                 f_out.write(f_in.read())
         print(f"Successfully decompressed to {decompressed_file_path}")
         
-        # Delete the .gz file after successful decompression
         try:
             os.remove(output_path)
             print(f"Deleted temporary gzipped file: {output_path}")
         except OSError as e:
             print(f"Error deleting gzipped file {output_path}: {e}", file=sys.stderr)
 
-        return decompressed_file_path # Return path to decompressed file
+        return decompressed_file_path
     except requests.exceptions.RequestException as e:
         print(f"Error during download: {e}", file=sys.stderr)
         return None
@@ -252,7 +277,7 @@ def download_raw_file_to_disk(url, token, output_path):
     try:
         print(f"Downloading raw file from: {url}")
         response = requests.get(url, headers=headers, stream=True)
-        response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
+        response.raise_for_status()
 
         with open(output_path, 'wb') as outfile:
             for chunk in response.iter_content(chunk_size=8192):
@@ -268,14 +293,14 @@ def download_raw_file_to_disk(url, token, output_path):
 
 # --- Main Script Logic ---
 if __name__ == "__main__":
-    script_start_time = time.time() # Record script start time
+    script_start_time = time.time()
 
-    if os.environ.get('TOKEN') is None: # Use os.environ.get for API_TOKEN check
+    if os.environ.get('TOKEN') is None:
         print("Error: TOKEN environment variable not set. Please set it to your Spur API token.", file=sys.stderr)
         sys.exit(1)
 
     current_date_ymd = datetime.date.today().strftime("%Y%m%d")
-    decompressed_source_file_path = None # Path to the raw decompressed JSON file (on disk)
+    decompressed_source_file_path = None
     base_feed_name = "UnknownFeed" 
     
     # --- Step 1: Get or Download Feed ---
@@ -290,8 +315,6 @@ if __name__ == "__main__":
         decompressed_source_file_path = provided_file_path
         print(f"Using provided file: {decompressed_source_file_path}")
 
-        # Attempt to extract date and feed name from the provided filename
-        # Expanded regex to include IPGeoMMDB and IPGeoJSON for existing file naming
         match = re.search(r'(\d{8})(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetrics|DCH)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
         if match:
             current_date_ymd = match.group(1)
@@ -300,7 +323,7 @@ if __name__ == "__main__":
             name_without_ext = os.path.splitext(os.path.basename(provided_file_path))[0]
             base_feed_name_candidate = re.sub(r'^\d{8}', '', name_without_ext)
             if base_feed_name_candidate:
-                base_feed_name = name_without_ext # Use full name if no date prefix removed
+                base_feed_name = name_without_ext
             else:
                 base_feed_name = "CustomFeed"
             print(f"Warning: Could not extract date and standard FeedName from provided filename. Using derived name '{base_feed_name}'.", file=sys.stderr)
@@ -313,7 +336,7 @@ if __name__ == "__main__":
             "4": {"name": "IPGeo (MMDB - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False},
             "5": {"name": "IPGeo (JSON - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.json.gz", "base_feed_name": "IPGeoJSON", "needs_decompression": True, "output_ext": ".json", "is_historical": False},
             "6": {"name": "Service Metrics (Latest)", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetrics", "needs_decompression": True, "output_ext": ".json", "is_historical": False},
-            "7": {"name": "Data Center Hosting (DCH) (Latest)", "url": "https://feeds.spur.us/v2/dch/latest.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": False}, # New DCH Feed
+            "7": {"name": "Data Center Hosting (DCH) (Latest)", "url": "https://feeds.spur.us/v2/dch/latest.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": False},
             "H1": {"name": "Anonymous (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.json.gz", "base_feed_name": "AnonymousHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True},
             "H2": {"name": "AnonRes (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/0000.json.gz", "base_feed_name": "AnonResHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True},
             "H3": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True},
@@ -330,7 +353,7 @@ if __name__ == "__main__":
             if selected_feed is None:
                 print("Invalid choice. Please enter a number from the list.")
 
-        api_url = selected_feed.get("url") # Use .get for non-historical feeds
+        api_url = selected_feed.get("url")
         base_feed_name = selected_feed["base_feed_name"]
         needs_decompression = selected_feed["needs_decompression"]
         output_ext = selected_feed["output_ext"]
@@ -342,23 +365,21 @@ if __name__ == "__main__":
                 historical_date_ymd = input("Enter the date for the historical feed in YYYYMMDD format (e.g., 20231231): ").strip()
                 if re.fullmatch(r'\d{8}', historical_date_ymd):
                     try:
-                        # Validate if the date is a real date
                         datetime.datetime.strptime(historical_date_ymd, "%Y%m%d")
                         api_url = selected_feed["url_template"].format(historical_date_ymd)
-                        current_date_ymd = historical_date_ymd # Use historical date for filename
+                        current_date_ymd = historical_date_ymd
                         date_input_valid = True
                     except ValueError:
                         print("Invalid date. Please enter a real date in YYYYMMDD format.")
                 else:
                     print("Invalid format. Please enter the date in YYYYMMDD format (e.g., 20231231).")
 
-
         download_filename = f"{current_date_ymd}{base_feed_name}"
         if needs_decompression:
-            download_filename += ".json.gz" # Original gzipped name
+            download_filename += ".json.gz"
             decompressed_source_file_path = download_and_decompress_gz_to_file(api_url, os.environ.get('TOKEN'), download_filename)
         else:
-            download_filename += output_ext # For MMDB, this is the final file name
+            download_filename += output_ext
             decompressed_source_file_path = download_raw_file_to_disk(api_url, os.environ.get('TOKEN'), download_filename)
         
         if decompressed_source_file_path is None:
@@ -369,19 +390,17 @@ if __name__ == "__main__":
         print("Invalid response. Please answer 'Y' or 'N'. Exiting.", file=sys.stderr)
         sys.exit(1)
 
-    # Validate that the source file is now available and is a JSON file for parsing
     if not decompressed_source_file_path or not os.path.exists(decompressed_source_file_path):
         print(f"Critical Error: Source data file '{decompressed_source_file_path}' could not be located or created. Exiting.", file=sys.stderr)
         sys.exit(1)
     
-    # Check if the file is a JSON file, as the rest of the script assumes JSON parsing
     if not decompressed_source_file_path.lower().endswith('.json'):
         print(f"Error: The selected feed '{os.path.basename(decompressed_source_file_path)}' is not a JSON file. This script can only filter JSON feeds.", file=sys.stderr)
         print("Please select a JSON feed or provide an existing JSON file.", file=sys.stderr)
         sys.exit(1)
 
     # --- Step 2: Get user input for filtering ---
-    filter_criteria = [] # List to store (key_name, [keywords]) tuples
+    filter_criteria = []
     
     perform_initial_filter_choice = input("\nDo you want to filter the data? (Y/N): ").strip().upper()
 
@@ -390,17 +409,16 @@ if __name__ == "__main__":
             current_filter_key = None 
             current_keywords_input = None
             current_keywords = []
+            current_match_type_keywords = 'AND' # Default to AND for keywords within a single criterion
 
-            # Ask if they want to filter by a specific key for THIS filter condition
             perform_key_specific_filter_choice = input("  Filter by a specific key (Y/N)? ").strip().upper() 
 
             if perform_key_specific_filter_choice == 'Y':
-                # Sample data to suggest key names for filtering
                 print("\n--- Analyzing sample data for filterable keys ---") 
                 sample_lines = []
                 try:
                     with open(decompressed_source_file_path, 'r', encoding='utf-8') as f_sample:
-                        for _ in range(100): # Read first 10 lines to sample
+                        for _ in range(10):
                             line = f_sample.readline()
                             if not line: break
                             sample_lines.append(line)
@@ -428,22 +446,33 @@ if __name__ == "__main__":
                 current_filter_key = input("  Enter the exact key name for this filter (e.g., 'client_behaviors', 'ip', 'organization'): ").strip()
                 if not current_filter_key:
                     print("  No key name provided for this filter. Skipping this filter condition.", file=sys.stderr)
-                    continue # Skip to next iteration of while loop
+                    continue
 
                 current_keywords_input = input(f"  Enter keywords for key '{current_filter_key}' (comma-separated, e.g., 'malicious,trojan'): ").strip()
             
             elif perform_key_specific_filter_choice == 'N':
                 current_keywords_input = input("  Enter keywords for general search across lines (comma-separated, e.g., 'malicious,trojan'): ").strip()
-                # current_filter_key remains None for general search
             else:
                 print("  Invalid response. Skipping this filter condition.", file=sys.stderr)
-                continue # Skip to next iteration of while loop
+                continue
             
             if current_keywords_input:
                 current_keywords = [kw.strip().lower() for kw in current_keywords_input.split(',') if kw.strip()]
                 if current_keywords:
-                    filter_criteria.append((current_filter_key, current_keywords))
-                    print(f"  Added filter: Key='{current_filter_key if current_filter_key else 'Any'}', Keywords='{', '.join(current_keywords)}'")
+                    # Prompt for AND/OR for keywords within this criterion
+                    match_type_kws_choice = input("  Match ALL keywords (AND) or ANY keyword (OR) for this condition? (AND/OR): ").strip().upper()
+                    if match_type_kws_choice in ['AND', 'OR']:
+                        current_match_type_keywords = match_type_kws_choice
+                    else:
+                        print("  Invalid choice for keyword matching type. Defaulting to AND.", file=sys.stderr)
+                        current_match_type_keywords = 'AND'
+
+                    filter_criteria.append({
+                        'key': current_filter_key,
+                        'keywords': current_keywords,
+                        'match_type_keywords': current_match_type_keywords
+                    })
+                    print(f"  Added filter: Key='{current_filter_key if current_filter_key else 'Any'}', Keywords='{', '.join(current_keywords)}', MatchType='{current_match_type_keywords}'")
                 else:
                     print("  No valid keywords provided for this filter condition. Skipping.", file=sys.stderr)
             else:
@@ -453,35 +482,42 @@ if __name__ == "__main__":
             if add_another != 'Y':
                 break
     
+    overall_match_type = 'AND' # Default overall match type
+    if len(filter_criteria) > 1:
+        overall_match_type_choice = input("Apply ALL filter conditions (AND) or ANY filter condition (OR)? (AND/OR): ").strip().upper()
+        if overall_match_type_choice in ['AND', 'OR']:
+            overall_match_type = overall_match_type_choice
+        else:
+            print("Invalid choice for overall filter matching type. Defaulting to AND.", file=sys.stderr)
+            overall_match_type = 'AND'
+
     if not filter_criteria:
         print("No filter criteria provided. All records will be exported.", file=sys.stderr)
-        perform_filter = 'N' # No filtering will be done
+        perform_filter = 'N'
     else:
-        perform_filter = 'Y' # Filtering will be done
+        perform_filter = 'Y'
 
     # --- Step 3: Get filename for filtered content (JSONL) ---
     filtered_output_filename = get_output_filename(
         current_date_ymd, 
         base_feed_name,   
-        filter_criteria if perform_filter == 'Y' else []
+        filter_criteria if perform_filter == 'Y' else [],
+        overall_match_type # Pass overall match type for filename suggestion
     )
     output_file_path = os.path.join(os.getcwd(), filtered_output_filename)
 
     print(f"\n--- Starting Content Filtering ---")
     if perform_filter == 'Y':
-        print(f"Filtering content from '{decompressed_source_file_path}' based on {len(filter_criteria)} criteria (logical AND)...")
+        print(f"Filtering content from '{decompressed_source_file_path}' based on {len(filter_criteria)} criteria (overall '{overall_match_type}')...")
     else:
-        # If no filtering, the decompressed_source_file_path is the final output.
-        # No new file creation or copying is needed.
         print(f"No filtering requested. The output file is: '{decompressed_source_file_path}'.")
         print("Script finished.")
-        # Calculate and print total completion time (for download/decompression only)
         script_end_time = time.time()
         total_elapsed_seconds = script_end_time - script_start_time
         minutes = int(total_elapsed_seconds // 60)
         seconds = int(total_elapsed_seconds % 60)
         print(f"\nTotal script execution time: {minutes} Minutes {seconds} Seconds")
-        sys.exit(0) # Exit gracefully as no further processing is needed
+        sys.exit(0)
 
     # --- Step 4: Perform Parallel Streaming Filtering and Writing ---
     records_exported_count = 0
@@ -494,18 +530,14 @@ if __name__ == "__main__":
         with open(output_file_path, 'w', encoding='utf-8') as outfile:
             chunks = get_file_chunks(decompressed_source_file_path, NUM_PARALLEL_PROCESSORS)
             
-            # Use multiprocessing.Pool for true CPU parallelism
             with multiprocessing.Pool(processes=NUM_PARALLEL_PROCESSORS) as pool:
-                # Map the process_file_chunk function to each chunk
-                # pool.imap_unordered is used to get results as they complete, which is good for streaming
+                # Pass overall_match_type to the chunk processing function
                 results_iterator = pool.imap_unordered(
-                    process_file_chunk, # Pass the function directly
-                    [(decompressed_source_file_path, start, end, filter_criteria) for start, end in chunks] # Pass arguments as tuples
+                    process_file_chunk,
+                    [(decompressed_source_file_path, start, end, filter_criteria, overall_match_type) for start, end in chunks]
                 )
                 
                 for matching_objects_in_chunk in results_iterator:
-                    # The 'try' block for processing chunk results should be here,
-                    # and its 'except' should be at the same indentation level.
                     try: 
                         for obj in matching_objects_in_chunk:
                             outfile.write(json.dumps(obj, ensure_ascii=False) + '\n')
@@ -516,18 +548,17 @@ if __name__ == "__main__":
                             records_per_second = records_exported_count / elapsed_time if elapsed_time > 0 else 0
                             print(f"  Exported {records_exported_count} records ({records_per_second:.2f} records/s) - {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))} elapsed")
 
-                    except Exception as exc: # This is the correct indentation for this except
+                    except Exception as exc:
                         print(f"Error processing chunk result: {exc}", file=sys.stderr)
             
             print(f"Successfully exported {records_exported_count} records to {output_file_path}.")
 
-    except Exception as e: # This outer try/except is for file operations or pool creation
-            print(f"Error during streaming export to {output_file_path}: {e}", file=sys.stderr)
-            sys.exit(1)
+    except Exception as e:
+        print(f"Error during streaming export to {output_file_path}: {e}", file=sys.stderr)
+        sys.exit(1)
 
     print("\nScript finished.")
 
-    # Calculate and print total completion time
     script_end_time = time.time()
     total_elapsed_seconds = script_end_time - script_start_time
     minutes = int(total_elapsed_seconds // 60)
