@@ -60,7 +60,7 @@ def get_output_filename(current_date_ymd, base_feed_name, filter_criteria, overa
         for i, criterion in enumerate(filter_criteria):
             key_name = criterion['key']
             kws = criterion['keywords']
-            match_type_keywords = criterion['match_type_keywords']
+            # match_type_keywords = criterion['match_type_keywords'] # Not directly used in filename anymore
 
             if key_name: # If it's a key-specific filter
                 sanitized_key_name = re.sub(r'[^a-zA-Z0-9]', '', key_name).title()
@@ -72,9 +72,14 @@ def get_output_filename(current_date_ymd, base_feed_name, filter_criteria, overa
                 if sanitized_keywords:
                     filename_parts.append("".join(sanitized_keywords))
             
-            # Add AND/OR indicator if multiple criteria and not the last one
-            if len(filter_criteria) > 1 and i < len(filter_criteria) - 1:
-                filename_parts.append(overall_match_type.upper())
+            # Add overall AND/OR indicator if multiple criteria and not the last one
+            # This logic is now handled by the overall_match_type for the whole filename
+            # if len(filter_criteria) > 1 and i < len(filter_criteria) - 1:
+            #     filename_parts.append(overall_match_type.upper())
+
+    # Add overall match type to filename if there are multiple criteria
+    if len(filter_criteria) > 1:
+        filename_parts.append(overall_match_type.upper())
 
     default_filename = "".join(filename_parts) + ".jsonl"
     
@@ -399,7 +404,6 @@ if __name__ == "__main__":
         print("Please select a JSON feed or provide an existing JSON file.", file=sys.stderr)
         sys.exit(1)
 
-    # --- Step 2: Get user input for filtering ---
     filter_criteria = []
     
     perform_initial_filter_choice = input("\nDo you want to filter the data? (Y/N): ").strip().upper()
@@ -459,13 +463,16 @@ if __name__ == "__main__":
             if current_keywords_input:
                 current_keywords = [kw.strip().lower() for kw in current_keywords_input.split(',') if kw.strip()]
                 if current_keywords:
-                    # Prompt for AND/OR for keywords within this criterion
-                    match_type_kws_choice = input("  Match ALL keywords (AND) or ANY keyword (OR) for this condition? (AND/OR): ").strip().upper()
-                    if match_type_kws_choice in ['AND', 'OR']:
-                        current_match_type_keywords = match_type_kws_choice
+                    # Only ask for match type if there's more than one keyword
+                    if len(current_keywords) > 1:
+                        match_type_kws_choice = input("  Match ALL keywords (AND) or ANY keyword (OR) for this condition? (AND/OR): ").strip().upper()
+                        if match_type_kws_choice in ['AND', 'OR']:
+                            current_match_type_keywords = match_type_kws_choice
+                        else:
+                            print("  Invalid choice for keyword matching type. Defaulting to AND.", file=sys.stderr)
+                            current_match_type_keywords = 'AND'
                     else:
-                        print("  Invalid choice for keyword matching type. Defaulting to AND.", file=sys.stderr)
-                        current_match_type_keywords = 'AND'
+                        current_match_type_keywords = 'AND' # Single keyword, AND/OR is irrelevant
 
                     filter_criteria.append({
                         'key': current_filter_key,
@@ -531,7 +538,6 @@ if __name__ == "__main__":
             chunks = get_file_chunks(decompressed_source_file_path, NUM_PARALLEL_PROCESSORS)
             
             with multiprocessing.Pool(processes=NUM_PARALLEL_PROCESSORS) as pool:
-                # Pass overall_match_type to the chunk processing function
                 results_iterator = pool.imap_unordered(
                     process_file_chunk,
                     [(decompressed_source_file_path, start, end, filter_criteria, overall_match_type) for start, end in chunks]
