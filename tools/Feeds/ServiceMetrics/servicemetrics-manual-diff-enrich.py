@@ -14,7 +14,7 @@ import re     # Import re for regex operations
 API_URL_BASE = "https://api.spur.us/v2/metadata/tags/"
 # Use TOKEN from environment variable
 API_TOKEN = os.environ.get('TOKEN')
-# DEFAULT_OUTPUT_FILE = "added_tags_enrichment.jsonl" # This will be dynamically generated now
+# DEFAULT_OUTPUT_FILE = "added_tags_enrichment.json" # This will be dynamically generated now
 
 MAX_WORKERS = 10  # Number of concurrent API requests. Adjust based on API rate limits.
 REQUEST_TIMEOUT = 15 # Timeout for each API request in seconds
@@ -98,7 +98,7 @@ def enrich_tag_metadata(tag):
         print(f"Error enriching tag '{tag}': {e}", file=sys.stderr)
         return None
 
-def write_to_jsonl_stream(results_iterator, output_path):
+def write_to_json_stream(results_iterator, output_path):
     """
     Writes a stream of JSON objects to a JSON Lines file.
     Each JSON object is written on a new line.
@@ -184,12 +184,12 @@ def main():
     file1_date = get_date_from_filename_or_creation(file1)
     file2_date = get_date_from_filename_or_creation(file2)
 
-    # Default output filename: file1_date-file2_dateSMDiffEnriched.jsonl
+    # Default output filename: file1_date-file2_dateSMDiffEnriched.json
     # Assuming file1 is the 'old' and file2 is the 'new' for diff context
-    default_output_filename = f"{file1_date}-{file2_date}SMDiffEnriched.jsonl"
+    default_output_filename = f"{file1_date}-{file2_date}SMDiffEnriched.json"
 
     # Prompt for output filename
-    output_file_name_prompt = f"Enter the desired output JSONL file name (e.g., {default_output_filename}): ".strip()
+    output_file_name_prompt = f"Enter the desired output JSON file name (e.g., {default_output_filename}): ".strip()
     output_file_name = input(output_file_name_prompt).strip()
 
     if not output_file_name:
@@ -197,8 +197,8 @@ def main():
         print(f"Using default output file name: {default_output_filename}")
     else:
         output_file_name = "".join(x for x in output_file_name if x.isalnum() or x in "._-")
-        if not output_file_name.lower().endswith(".jsonl"):
-            output_file_name += ".jsonl"
+        if not output_file_name.lower().endswith(".json"):
+            output_file_name += ".json"
         # Place output file in the current working directory
         output_path = os.path.join(os.getcwd(), output_file_name) 
 
@@ -209,8 +209,8 @@ def main():
         # Submit enrichment tasks for each added tag
         results_iterator = executor.map(enrich_tag_metadata, tags_to_enrich)
         
-        # Stream the results directly to the JSONL file
-        write_to_jsonl_stream(results_iterator, output_path)
+        # Stream the results directly to the JSON file
+        write_to_json_stream(results_iterator, output_path)
 
     print("Tag enrichment process completed.")
 
