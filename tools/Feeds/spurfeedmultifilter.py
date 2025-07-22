@@ -340,11 +340,11 @@ if __name__ == "__main__":
             "3": {"name": "Anonymous (Latest)", "url": "https://feeds.spur.us/v2/anonymous/latest.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": False},
             "4": {"name": "IPGeo (MMDB - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False},
             "5": {"name": "IPGeo (JSON - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.json.gz", "base_feed_name": "IPGeoJSON", "needs_decompression": True, "output_ext": ".json", "is_historical": False},
-            "6": {"name": "Service Metrics (Latest)", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetrics", "needs_decompression": True, "output_ext": ".json", "is_historical": False},
+            "6": {"name": "Service Metrics (Latest)", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": False},
             "7": {"name": "Data Center Hosting (DCH) (Latest)", "url": "https://feeds.spur.us/v2/dch/latest.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": False},
             "H1": {"name": "Anonymous (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.json.gz", "base_feed_name": "AnonymousHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True},
             "H2": {"name": "AnonRes (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/0000.json.gz", "base_feed_name": "AnonResHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True},
-            "H3": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True},
+            "H3": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsAllHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True},
         }
 
         selected_feed = None
@@ -422,7 +422,7 @@ if __name__ == "__main__":
                 sample_lines = []
                 try:
                     with open(decompressed_source_file_path, 'r', encoding='utf-8') as f_sample:
-                        for _ in range(10):
+                        for _ in range(100):
                             line = f_sample.readline()
                             if not line: break
                             sample_lines.append(line)
