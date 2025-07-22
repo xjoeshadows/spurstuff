@@ -15,8 +15,8 @@ DOWNLOAD_URL = "https://feeds.spur.us/v2/service-metrics/latest.json.gz"
 API_TOKEN = os.environ.get('TOKEN') # Use TOKEN from environment variable
 
 # Default filename for the raw decompressed service metrics feed
-# This will be YYYYMMDDServiceMetricsFull.json
-DEFAULT_RAW_OUTPUT_FILENAME_TEMPLATE = "{}ServiceMetricsFull.json" 
+# This will be YYYYMMDDServiceMetricsAll.json
+DEFAULT_RAW_OUTPUT_FILENAME_TEMPLATE = "{}ServiceMetricsAll.json" 
 
 # Default prefix for the filtered output filename (e.g., YYYYMMDDServiceMetrics)
 DEFAULT_FILTERED_OUTPUT_FILENAME_PREFIX_TEMPLATE = "{}ServiceMetrics" 
@@ -174,7 +174,7 @@ if __name__ == "__main__":
     # --- Step 1: Download and Decompress ---
     print("--- Starting Download and Decompression ---")
     
-    # Default raw output filename is YYYYMMDDServiceMetricsFull.json
+    # Default raw output filename is YYYYMMDDServiceMetricsAll.json
     raw_output_filename = DEFAULT_RAW_OUTPUT_FILENAME_TEMPLATE.format(current_date_ymd)
     raw_output_path = os.path.join(os.getcwd(), raw_output_filename) 
 
