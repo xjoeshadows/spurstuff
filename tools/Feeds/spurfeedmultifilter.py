@@ -49,13 +49,19 @@ def flatten_json(json_data, parent_key='', sep='_'):
             items.append((new_key, v))
     return dict(items)
 
-def get_output_filename(current_date_ymd, base_feed_name, filter_criteria, overall_match_type):
+def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, filter_criteria, overall_match_type):
     """
     Prompts the user for an output filename, offering a default based on filter criteria.
-    The format is YYYYMMDD[inputfilename]Key1Keyword1Key2Keyword2.jsonl
+    The format is YYYYMMDD[HHMMSS][inputfilename]Key1Keyword1Key2Keyword2.jsonl
     """
-    filename_parts = [current_date_ymd, base_feed_name]
+    filename_parts = [current_date_ymd]
     
+    # Add timestamp only for AnonResRT feed
+    if base_feed_name == "AnonResRT" and current_time_hms:
+        filename_parts.append(current_time_hms)
+        
+    filename_parts.append(base_feed_name)
+
     if filter_criteria: # Only append filter parts if filtering is active
         for i, criterion in enumerate(filter_criteria):
             key_name = criterion['key']
@@ -75,7 +81,7 @@ def get_output_filename(current_date_ymd, base_feed_name, filter_criteria, overa
             # Add overall AND/OR indicator if multiple criteria and not the last one
             # This logic is now handled by the overall_match_type for the whole filename
             # if len(filter_criteria) > 1 and i < len(filter_criteria) - 1:
-            #     filename_parts.append(overall_match_type.upper())
+            # filename_parts.append(overall_match_type.upper())
 
     # Add overall match type to filename if there are multiple criteria
     if len(filter_criteria) > 1:
@@ -305,6 +311,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     current_date_ymd = datetime.date.today().strftime("%Y%m%d")
+    current_time_hms = None # Initialize timestamp for non-realtime feeds
     decompressed_source_file_path = None
     base_feed_name = "UnknownFeed" 
     
@@ -312,7 +319,7 @@ if __name__ == "__main__":
     use_existing_file_input = input("Do you want to use an existing Spur Feed file? (Y/N): ").strip().upper()
 
     if use_existing_file_input == 'Y':
-        provided_file_path = input("Please enter the full path to your Spur Feed file (e.g., '/path/to/20240610AnonRes.json'): ").strip()
+        provided_file_path = input("Please enter the full path to your Spur Feed file (e.g., '/path/to/20240610AnonRes.json' or '/path/to/20240610123000AnonResRT.json'): ").strip()
         if not os.path.exists(provided_file_path):
             print(f"Error: Provided input file '{provided_file_path}' not found. Exiting.", file=sys.stderr)
             sys.exit(1)
@@ -320,15 +327,20 @@ if __name__ == "__main__":
         decompressed_source_file_path = provided_file_path
         print(f"Using provided file: {decompressed_source_file_path}")
 
-        match = re.search(r'(\d{8})(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetrics|DCH)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
+        # Updated regex to capture optional 6-digit timestamp for AnonResRT
+        match = re.search(r'(\d{8})(\d{6})?(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetrics|DCH)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
         if match:
             current_date_ymd = match.group(1)
-            base_feed_name = match.group(2)
+            # Check if the optional timestamp group exists and is not None
+            if match.group(2):
+                current_time_hms = match.group(2)
+            base_feed_name = match.group(3)
         else:
             name_without_ext = os.path.splitext(os.path.basename(provided_file_path))[0]
-            base_feed_name_candidate = re.sub(r'^\d{8}', '', name_without_ext)
+            # Try to extract base feed name, excluding potential date and timestamp
+            base_feed_name_candidate = re.sub(r'^\d{8}(\d{6})?', '', name_without_ext)
             if base_feed_name_candidate:
-                base_feed_name = name_without_ext
+                base_feed_name = base_feed_name_candidate
             else:
                 base_feed_name = "CustomFeed"
             print(f"Warning: Could not extract date and standard FeedName from provided filename. Using derived name '{base_feed_name}'.", file=sys.stderr)
@@ -379,7 +391,13 @@ if __name__ == "__main__":
                 else:
                     print("Invalid format. Please enter the date in YYYYMMDD format (e.g., 20231231).")
 
-        download_filename = f"{current_date_ymd}{base_feed_name}"
+        download_filename = f"{current_date_ymd}"
+        if base_feed_name == "AnonResRT":
+            current_time_hms = datetime.datetime.now().strftime("%H%M%S")
+            download_filename += f"{current_time_hms}"
+
+        download_filename += base_feed_name
+
         if needs_decompression:
             download_filename += ".json.gz"
             decompressed_source_file_path = download_and_decompress_gz_to_file(api_url, os.environ.get('TOKEN'), download_filename)
@@ -507,6 +525,7 @@ if __name__ == "__main__":
     # --- Step 3: Get filename for filtered content (JSONL) ---
     filtered_output_filename = get_output_filename(
         current_date_ymd, 
+        current_time_hms, # Pass the timestamp
         base_feed_name,   
         filter_criteria if perform_filter == 'Y' else [],
         overall_match_type # Pass overall match type for filename suggestion
