@@ -52,7 +52,7 @@ def flatten_json(json_data, parent_key='', sep='_'):
 def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, filter_criteria, overall_match_type):
     """
     Prompts the user for an output filename, offering a default based on filter criteria.
-    The format is YYYYMMDD[HHMMSS][inputfilename]Key1Keyword1Key2Keyword2.jsonl
+    The format is YYYYMMDD[HHMMSS][inputfilename]Key1Keyword1Key2Keyword2.json
     """
     filename_parts = [current_date_ymd]
     
@@ -87,7 +87,7 @@ def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, filt
     if len(filter_criteria) > 1:
         filename_parts.append(overall_match_type.upper())
 
-    default_filename = "".join(filename_parts) + ".jsonl"
+    default_filename = "".join(filename_parts) + ".json"
     
     prompt_message = f"Enter the desired output file name (e.g., {default_filename}): "
     user_output_filename = input(prompt_message).strip()
@@ -97,8 +97,8 @@ def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, filt
         return default_filename
     else:
         sanitized_filename = "".join(x for x in user_output_filename if x.isalnum() or x in "._-")
-        if not sanitized_filename.lower().endswith(".jsonl"):
-            sanitized_filename += ".jsonl"
+        if not sanitized_filename.lower().endswith(".json"):
+            sanitized_filename += ".json"
         return sanitized_filename
 
 def get_file_chunks(filepath, num_chunks):
@@ -314,7 +314,8 @@ if __name__ == "__main__":
     current_time_hms = None # Initialize timestamp for non-realtime feeds
     decompressed_source_file_path = None
     base_feed_name = "UnknownFeed" 
-    
+    is_feed_json = True # Assume JSON by default
+
     # --- Step 1: Get or Download Feed ---
     use_existing_file_input = input("Do you want to use an existing Spur Feed file? (Y/N): ").strip().upper()
 
@@ -335,6 +336,9 @@ if __name__ == "__main__":
             if match.group(2):
                 current_time_hms = match.group(2)
             base_feed_name = match.group(3)
+            # Determine if the existing file is JSON based on its detected feed type
+            if base_feed_name in ["IPGeoMMDB"]: # Add other non-JSON feeds here if necessary
+                is_feed_json = False
         else:
             name_without_ext = os.path.splitext(os.path.basename(provided_file_path))[0]
             # Try to extract base feed name, excluding potential date and timestamp
@@ -344,19 +348,23 @@ if __name__ == "__main__":
             else:
                 base_feed_name = "CustomFeed"
             print(f"Warning: Could not extract date and standard FeedName from provided filename. Using derived name '{base_feed_name}'.", file=sys.stderr)
+            # If we couldn't parse it, assume it's JSON unless its extension is .mmdb
+            if not provided_file_path.lower().endswith('.json') and not provided_file_path.lower().endswith('.json.gz'):
+                is_feed_json = False
+
 
     elif use_existing_file_input == 'N':
         feed_options = {
-            "1": {"name": "AnonRes (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/latest.json.gz", "base_feed_name": "AnonRes", "needs_decompression": True, "output_ext": ".json", "is_historical": False},
-            "2": {"name": "AnonRes Realtime (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/realtime/latest.json.gz", "base_feed_name": "AnonResRT", "needs_decompression": True, "output_ext": ".json", "is_historical": False},
-            "3": {"name": "Anonymous (Latest)", "url": "https://feeds.spur.us/v2/anonymous/latest.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": False},
-            "4": {"name": "IPGeo (MMDB - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False},
-            "5": {"name": "IPGeo (JSON - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.json.gz", "base_feed_name": "IPGeoJSON", "needs_decompression": True, "output_ext": ".json", "is_historical": False},
-            "6": {"name": "Service Metrics (Latest)", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": False},
-            "7": {"name": "Data Center Hosting (DCH) (Latest)", "url": "https://feeds.spur.us/v2/dch/latest.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": False},
-            "H1": {"name": "Anonymous (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.json.gz", "base_feed_name": "AnonymousHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True},
-            "H2": {"name": "AnonRes (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/0000.json.gz", "base_feed_name": "AnonResHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True},
-            "H3": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsAllHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True},
+            "1": {"name": "AnonRes (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/latest.json.gz", "base_feed_name": "AnonRes", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "2": {"name": "AnonRes Realtime (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/realtime/latest.json.gz", "base_feed_name": "AnonResRT", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "3": {"name": "Anonymous (Latest)", "url": "https://feeds.spur.us/v2/anonymous/latest.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "4": {"name": "IPGeo (MMDB - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False, "is_json": False},
+            "5": {"name": "IPGeo (JSON - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.json.gz", "base_feed_name": "IPGeoJSON", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "6": {"name": "Service Metrics (Latest)", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "7": {"name": "Data Center Hosting (DCH) (Latest)", "url": "https://feeds.spur.us/v2/dch/latest.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "H1": {"name": "Anonymous (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.json.gz", "base_feed_name": "AnonymousHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+            "H2": {"name": "AnonRes (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/0000.json.gz", "base_feed_name": "AnonResHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+            "H3": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsAllHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
         }
 
         selected_feed = None
@@ -375,6 +383,7 @@ if __name__ == "__main__":
         needs_decompression = selected_feed["needs_decompression"]
         output_ext = selected_feed["output_ext"]
         is_historical = selected_feed["is_historical"]
+        is_feed_json = selected_feed["is_json"] # Set is_feed_json based on selection
 
         if is_historical:
             date_input_valid = False
@@ -417,10 +426,24 @@ if __name__ == "__main__":
         print(f"Critical Error: Source data file '{decompressed_source_file_path}' could not be located or created. Exiting.", file=sys.stderr)
         sys.exit(1)
     
-    if not decompressed_source_file_path.lower().endswith('.json'):
-        print(f"Error: The selected feed '{os.path.basename(decompressed_source_file_path)}' is not a JSON file. This script can only filter JSON feeds.", file=sys.stderr)
-        print("Please select a JSON feed or provide an existing JSON file.", file=sys.stderr)
+    # Check if the feed is JSON and if filtering can proceed
+    if not is_feed_json:
+        print(f"The selected feed '{os.path.basename(decompressed_source_file_path)}' is not a JSON file. No filtering will be performed.")
+        print(f"The downloaded file is located at: {decompressed_source_file_path}")
+        print("Script finished.")
+        script_end_time = time.time()
+        total_elapsed_seconds = script_end_time - script_start_time
+        minutes = int(total_elapsed_seconds // 60)
+        seconds = int(total_elapsed_seconds % 60)
+        print(f"\nTotal script execution time: {minutes} Minutes {seconds} Seconds")
+        sys.exit(0)
+    
+    # Original JSON check (can be simplified if is_feed_json handles all cases)
+    if not decompressed_source_file_path.lower().endswith('.json') and is_feed_json:
+        print(f"Error: The selected feed '{os.path.basename(decompressed_source_file_path)}' is expected to be a JSON file but its extension is not .json.", file=sys.stderr)
+        print("Please ensure you selected a JSON feed or provided an existing JSON file.", file=sys.stderr)
         sys.exit(1)
+
 
     filter_criteria = []
     
@@ -522,7 +545,7 @@ if __name__ == "__main__":
     else:
         perform_filter = 'Y'
 
-    # --- Step 3: Get filename for filtered content (JSONL) ---
+    # --- Step 3: Get filename for filtered content (json) ---
     filtered_output_filename = get_output_filename(
         current_date_ymd, 
         current_time_hms, # Pass the timestamp
