@@ -320,7 +320,7 @@ if __name__ == "__main__":
     use_existing_file_input = input("Do you want to use an existing Spur Feed file? (Y/N): ").strip().upper()
 
     if use_existing_file_input == 'Y':
-        provided_file_path = input("Please enter the full path to your Spur Feed file (e.g., '/path/to/20240610AnonRes.json' or '/path/to/20240610123000AnonResRT.json'): ").strip()
+        provided_file_path = input("Please enter the full path to your Spur Feed file (e.g., '/path/to/20240610Anonymous-Residential.json' or '/path/to/20240610123000AnonResRT.json'): ").strip()
         if not os.path.exists(provided_file_path):
             print(f"Error: Provided input file '{provided_file_path}' not found. Exiting.", file=sys.stderr)
             sys.exit(1)
@@ -329,7 +329,8 @@ if __name__ == "__main__":
         print(f"Using provided file: {decompressed_source_file_path}")
 
         # Updated regex to capture optional 6-digit timestamp for AnonResRT
-        match = re.search(r'(\d{8})(\d{6})?(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetrics|DCH)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
+        # Also updated to include new base feed names and account for renamed "Anonymous-Residential"
+        match = re.search(r'(\d{8})(\d{6})?(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetrics|DCH|AnonymousIPv6|AnonymousResidentialIPv6|AnonymousResidential|AnonymousResidentialRT)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
         if match:
             current_date_ymd = match.group(1)
             # Check if the optional timestamp group exists and is not None
@@ -345,6 +346,10 @@ if __name__ == "__main__":
             base_feed_name_candidate = re.sub(r'^\d{8}(\d{6})?', '', name_without_ext)
             if base_feed_name_candidate:
                 base_feed_name = base_feed_name_candidate
+                # Attempt to normalize the base_feed_name if it was parsed as 'AnonRes' variants
+                if "AnonRes" in base_feed_name:
+                    base_feed_name = base_feed_name.replace("AnonRes", "AnonymousResidential")
+                
             else:
                 base_feed_name = "CustomFeed"
             print(f"Warning: Could not extract date and standard FeedName from provided filename. Using derived name '{base_feed_name}'.", file=sys.stderr)
@@ -355,16 +360,18 @@ if __name__ == "__main__":
 
     elif use_existing_file_input == 'N':
         feed_options = {
-            "1": {"name": "AnonRes (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/latest.json.gz", "base_feed_name": "AnonRes", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "2": {"name": "AnonRes Realtime (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/realtime/latest.json.gz", "base_feed_name": "AnonResRT", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "3": {"name": "Anonymous (Latest)", "url": "https://feeds.spur.us/v2/anonymous/latest.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "4": {"name": "IPGeo (MMDB - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False, "is_json": False},
-            "5": {"name": "IPGeo (JSON - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.json.gz", "base_feed_name": "IPGeoJSON", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "6": {"name": "Service Metrics (Latest)", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "7": {"name": "Data Center Hosting (DCH) (Latest)", "url": "https://feeds.spur.us/v2/dch/latest.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "H1": {"name": "Anonymous (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.json.gz", "base_feed_name": "AnonymousHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
-            "H2": {"name": "AnonRes (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/0000.json.gz", "base_feed_name": "AnonResHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
-            "H3": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsAllHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+            "1": {"name": "Anonymous (Latest)", "url": "https://feeds.spur.us/v2/anonymous/latest.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "2": {"name": "Anonymous IPv6 (Latest)", "url": "https://feeds.spur.us/v2/anonymous-ipv6/latest.json.gz", "base_feed_name": "AnonymousIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "3": {"name": "Anonymous (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.json.gz", "base_feed_name": "AnonymousHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+            "4": {"name": "Anonymous-Residential (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/latest.json.gz", "base_feed_name": "AnonymousResidential", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "5": {"name": "Anonymous-Residential IPv6 (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential-ipv6/latest.json.gz", "base_feed_name": "AnonymousResidentialIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "6": {"name": "Anonymous-Residential (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/0000.json.gz", "base_feed_name": "AnonymousResidentialHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+            "7": {"name": "Anonymous-Residential Realtime (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/realtime/latest.json.gz", "base_feed_name": "AnonResRT", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True}, # Base name kept as AnonResRT for filename consistency with timestamp
+            "8": {"name": "IPGeo (MMDB - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False, "is_json": False},
+            "9": {"name": "IPGeo (JSON - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.json.gz", "base_feed_name": "IPGeoJSON", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "10": {"name": "Data Center Hosting (DCH) (Latest)", "url": "https://feeds.spur.us/v2/dch/latest.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "11": {"name": "Service Metrics (Latest)", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "12": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsAllHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
         }
 
         selected_feed = None
@@ -401,11 +408,18 @@ if __name__ == "__main__":
                     print("Invalid format. Please enter the date in YYYYMMDD format (e.g., 20231231).")
 
         download_filename = f"{current_date_ymd}"
-        if base_feed_name == "AnonResRT":
+        if base_feed_name == "AnonResRT": # Keep AnonResRT for timestamping logic as it's realtime
             current_time_hms = datetime.datetime.now().strftime("%H%M%S")
             download_filename += f"{current_time_hms}"
+        
+        # Adjust base_feed_name for consistent filename generation if it's the old 'AnonRes'
+        if base_feed_name == "AnonRes":
+            download_filename += "AnonymousResidential"
+        elif base_feed_name == "AnonResHist":
+            download_filename += "AnonymousResidentialHist"
+        else:
+            download_filename += base_feed_name
 
-        download_filename += base_feed_name
 
         if needs_decompression:
             download_filename += ".json.gz"
@@ -545,7 +559,7 @@ if __name__ == "__main__":
     else:
         perform_filter = 'Y'
 
-    # --- Step 3: Get filename for filtered content (json) ---
+    # --- Step 3: Get filename for filtered content (JSONL) ---
     filtered_output_filename = get_output_filename(
         current_date_ymd, 
         current_time_hms, # Pass the timestamp
