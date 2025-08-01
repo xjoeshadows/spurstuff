@@ -87,7 +87,7 @@ def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, filt
     if len(filter_criteria) > 1:
         filename_parts.append(overall_match_type.upper())
 
-    default_filename = "".join(filename_parts) + ".json"
+    default_filename = "".join(filename_parts) + ".json" # Changed from .jsonl
     
     prompt_message = f"Enter the desired output file name (e.g., {default_filename}): "
     user_output_filename = input(prompt_message).strip()
@@ -97,8 +97,8 @@ def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, filt
         return default_filename
     else:
         sanitized_filename = "".join(x for x in user_output_filename if x.isalnum() or x in "._-")
-        if not sanitized_filename.lower().endswith(".json"):
-            sanitized_filename += ".json"
+        if not sanitized_filename.lower().endswith(".json"): # Changed from .jsonl
+            sanitized_filename += ".json" # Changed from .jsonl
         return sanitized_filename
 
 def get_file_chunks(filepath, num_chunks):
@@ -330,7 +330,8 @@ if __name__ == "__main__":
 
         # Updated regex to capture optional 6-digit timestamp for AnonResRT
         # Also updated to include new base feed names and account for renamed "Anonymous-Residential"
-        match = re.search(r'(\d{8})(\d{6})?(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetrics|DCH|AnonymousIPv6|AnonymousResidentialIPv6|AnonymousResidential|AnonymousResidentialRT)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
+        # The regex for parsing existing files should also look for the .json extension instead of .jsonl
+        match = re.search(r'(\d{8})(\d{6})?(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetrics|DCH|AnonymousIPv6|AnonymousResidentialIPv6|AnonymousResidential|AnonymousResidentialRT|IPSummary|SimilarIPs)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
         if match:
             current_date_ymd = match.group(1)
             # Check if the optional timestamp group exists and is not None
@@ -347,7 +348,7 @@ if __name__ == "__main__":
             if base_feed_name_candidate:
                 base_feed_name = base_feed_name_candidate
                 # Attempt to normalize the base_feed_name if it was parsed as 'AnonRes' variants
-                if "AnonRes" in base_feed_name:
+                if "AnonRes" in base_feed_name and "AnonResRT" not in base_feed_name: # Exclude AnonResRT from this replacement
                     base_feed_name = base_feed_name.replace("AnonRes", "AnonymousResidential")
                 
             else:
@@ -372,6 +373,8 @@ if __name__ == "__main__":
             "10": {"name": "Data Center Hosting (DCH) (Latest)", "url": "https://feeds.spur.us/v2/dch/latest.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
             "11": {"name": "Service Metrics (Latest)", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
             "12": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsAllHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+            "13": {"name": "IPSummary (Latest)", "url": "https://feeds.spur.us/v2/ipsummary/latest.json.gz", "base_feed_name": "IPSummary", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "14": {"name": "Similar IPs (Latest)", "url": "https://feeds.spur.us/v1/similar-ips/latest.json.gz", "base_feed_name": "SimilarIPs", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
         }
 
         selected_feed = None
@@ -413,11 +416,11 @@ if __name__ == "__main__":
             download_filename += f"{current_time_hms}"
         
         # Adjust base_feed_name for consistent filename generation if it's the old 'AnonRes'
-        if base_feed_name == "AnonRes":
+        if base_feed_name == "AnonRes": # Original base name for AnonRes (Latest)
             download_filename += "AnonymousResidential"
-        elif base_feed_name == "AnonResHist":
+        elif base_feed_name == "AnonResHist": # Original base name for Anonymous-Residential (Historical)
             download_filename += "AnonymousResidentialHist"
-        else:
+        else: # For all other feeds including the new IPv6 ones and AnonResRT
             download_filename += base_feed_name
 
 
@@ -560,6 +563,7 @@ if __name__ == "__main__":
         perform_filter = 'Y'
 
     # --- Step 3: Get filename for filtered content (JSONL) ---
+    # The get_output_filename function now generates .json files
     filtered_output_filename = get_output_filename(
         current_date_ymd, 
         current_time_hms, # Pass the timestamp
@@ -590,6 +594,7 @@ if __name__ == "__main__":
     print(f"Using {NUM_PARALLEL_PROCESSORS} parallel processors for filtering.")
 
     try:
+        # Output file opened with .json extension
         with open(output_file_path, 'w', encoding='utf-8') as outfile:
             chunks = get_file_chunks(decompressed_source_file_path, NUM_PARALLEL_PROCESSORS)
             
