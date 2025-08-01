@@ -87,7 +87,7 @@ def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, filt
     if len(filter_criteria) > 1:
         filename_parts.append(overall_match_type.upper())
 
-    default_filename = "".join(filename_parts) + ".json" # Changed from .jsonl
+    default_filename = "".join(filename_parts) + ".json"
     
     prompt_message = f"Enter the desired output file name (e.g., {default_filename}): "
     user_output_filename = input(prompt_message).strip()
@@ -97,8 +97,8 @@ def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, filt
         return default_filename
     else:
         sanitized_filename = "".join(x for x in user_output_filename if x.isalnum() or x in "._-")
-        if not sanitized_filename.lower().endswith(".json"): # Changed from .jsonl
-            sanitized_filename += ".json" # Changed from .jsonl
+        if not sanitized_filename.lower().endswith(".json"):
+            sanitized_filename += ".json"
         return sanitized_filename
 
 def get_file_chunks(filepath, num_chunks):
@@ -240,34 +240,44 @@ def process_file_chunk(args_tuple):
 
 def download_and_decompress_gz_to_file(url, token, output_path):
     """
-    Downloads a .gz file from the given URL, decompresses it, and saves it to output_path.
+    Downloads a .gz file from the given URL, decompresses it in a memory-efficient way,
+    and saves it to output_path.
     """
     headers = {"Token": token}
+    chunk_size = 8192 # Define chunk size for streaming
+    
     try:
         print(f"Downloading from: {url}")
         response = requests.get(url, headers=headers, stream=True)
         response.raise_for_status()
 
-        with open(output_path, 'wb') as outfile:
-            for chunk in response.iter_content(chunk_size=8192):
+        gzipped_output_path = output_path + ".gz"
+        with open(gzipped_output_path, 'wb') as outfile:
+            for chunk in response.iter_content(chunk_size=chunk_size):
                 outfile.write(chunk)
-        print(f"Successfully downloaded gzipped file to: {output_path}")
+        print(f"Successfully downloaded gzipped file to: {gzipped_output_path}")
 
-        decompressed_file_path = os.path.splitext(output_path)[0]
+        decompressed_file_path = os.path.splitext(gzipped_output_path)[0]
         if not decompressed_file_path.lower().endswith('.json'):
             decompressed_file_path += '.json'
 
-        print(f"Decompressing {output_path} to {decompressed_file_path}...")
-        with gzip.open(output_path, 'rb') as f_in:
+        print(f"Decompressing {gzipped_output_path} to {decompressed_file_path}...")
+        
+        # Decompress in chunks to be memory-efficient
+        with gzip.open(gzipped_output_path, 'rb') as f_in:
             with open(decompressed_file_path, 'wb') as f_out:
-                f_out.write(f_in.read())
+                while True:
+                    chunk = f_in.read(chunk_size)
+                    if not chunk:
+                        break
+                    f_out.write(chunk)
         print(f"Successfully decompressed to {decompressed_file_path}")
         
         try:
-            os.remove(output_path)
-            print(f"Deleted temporary gzipped file: {output_path}")
+            os.remove(gzipped_output_path)
+            print(f"Deleted temporary gzipped file: {gzipped_output_path}")
         except OSError as e:
-            print(f"Error deleting gzipped file {output_path}: {e}", file=sys.stderr)
+            print(f"Error deleting gzipped file {gzipped_output_path}: {e}", file=sys.stderr)
 
         return decompressed_file_path
     except requests.exceptions.RequestException as e:
@@ -330,7 +340,6 @@ if __name__ == "__main__":
 
         # Updated regex to capture optional 6-digit timestamp for AnonResRT
         # Also updated to include new base feed names and account for renamed "Anonymous-Residential"
-        # The regex for parsing existing files should also look for the .json extension instead of .jsonl
         match = re.search(r'(\d{8})(\d{6})?(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetrics|DCH|AnonymousIPv6|AnonymousResidentialIPv6|AnonymousResidential|AnonymousResidentialRT|IPSummary|SimilarIPs)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
         if match:
             current_date_ymd = match.group(1)
@@ -425,7 +434,7 @@ if __name__ == "__main__":
 
 
         if needs_decompression:
-            download_filename += ".json.gz"
+            download_filename += ".json"
             decompressed_source_file_path = download_and_decompress_gz_to_file(api_url, os.environ.get('TOKEN'), download_filename)
         else:
             download_filename += output_ext
@@ -562,8 +571,7 @@ if __name__ == "__main__":
     else:
         perform_filter = 'Y'
 
-    # --- Step 3: Get filename for filtered content (JSONL) ---
-    # The get_output_filename function now generates .json files
+    # --- Step 3: Get filename for filtered content (JSON) ---
     filtered_output_filename = get_output_filename(
         current_date_ymd, 
         current_time_hms, # Pass the timestamp
@@ -594,7 +602,6 @@ if __name__ == "__main__":
     print(f"Using {NUM_PARALLEL_PROCESSORS} parallel processors for filtering.")
 
     try:
-        # Output file opened with .json extension
         with open(output_file_path, 'w', encoding='utf-8') as outfile:
             chunks = get_file_chunks(decompressed_source_file_path, NUM_PARALLEL_PROCESSORS)
             
