@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import requests
 import json
 import sys
@@ -11,21 +12,20 @@ import time # For progress indicator
 
 # --- Configuration ---
 api_url_base = "https://api.spur.us/v2/context/"
-default_output_file = "ip_data.jsonl" # Default output extension
 
 # Set the maximum number of concurrent workers (threads) for API calls
 # Be mindful of API rate limits when setting this value.
-MAX_WORKERS = 200 # Keep at a realistic starting point
+MAX_WORKERS = 500
 
 # API request timeout in seconds. Crucial for preventing indefinite hangs.
-REQUEST_TIMEOUT = 30 # Increased to 30 seconds for more robustness
+REQUEST_TIMEOUT = 10 # Increased to 10 seconds from 2 seconds
 
 # Retry strategy for transient network errors and potential soft rate limits
 RETRY_STRATEGY = Retry(
-    total=5, # Increased total retries from 3 to 5
-    backoff_factor=2, # Increased backoff factor from 1 to 2 (delays: 2s, 4s, 8s, 16s, 32s)
-    status_forcelist=[429, 500, 502, 503, 504], # HTTP status codes to retry on (429 is Too Many Requests)
-    allowed_methods=["HEAD", "GET", "OPTIONS"] # Methods to retry
+    total=8, # Increased total retries from 5 to 8
+    backoff_factor=2,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET"]
 )
 
 # Create a session with the retry strategy
@@ -50,11 +50,9 @@ def enrich_ip(row_data, api_token):
               or None if an error occurs or IP is invalid.
     """
     ip_address = row_data.get('IP')
-    timestamp = row_data.get('Timestamp') # This will be the already formattedYYYYMMDD timestamp
+    timestamp = row_data.get('Timestamp')
 
-    # Ensure IP is valid before constructing URL
     if not ip_address or str(ip_address).lower() == 'nan':
-        # print(f"Skipping invalid IP address: {ip_address}", file=sys.stderr) # Suppress this for large files
         return None
 
     url = f"{api_url_base}{ip_address}"
@@ -63,23 +61,24 @@ def enrich_ip(row_data, api_token):
     headers = {'TOKEN': api_token}
 
     try:
-        # Use the session for the request and add a timeout
         response = HTTP.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status() # Raise an exception for bad status codes (e.g., 401, 400)
+        response.raise_for_status()
         
         json_response = response.json()
-        
-        # Merge all data from the input row into the API response
-        # This will add new fields and potentially overwrite existing ones
-        # if column names conflict with API response keys.
         merged_response = {**row_data, **json_response}
 
         return merged_response
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            print(f"No Enrichment Data for {ip_address} on {timestamp}", file=sys.stderr)
+        else:
+            print(f"Error enriching {ip_address} (timestamp={timestamp}): {e}", file=sys.stderr)
+        return None
     except requests.exceptions.RequestException as e:
         print(f"Error enriching {ip_address} (timestamp={timestamp}): {e}", file=sys.stderr)
         return None
 
-def write_to_jsonl_stream(results_iterator, output_path):
+def write_to_json_stream(results_iterator, output_path):
     """
     Writes a stream of JSON objects to a JSON Lines file.
     Each JSON object is written on a new line.
@@ -90,10 +89,9 @@ def write_to_jsonl_stream(results_iterator, output_path):
         print(f"Writing enriched records to {output_path} (JSON Lines format)...")
         with open(output_path, 'w', encoding='utf-8') as outfile:
             for result in results_iterator:
-                if result: # Only write if result is not None (i.e., enrichment was successful)
+                if result:
                     outfile.write(json.dumps(result, ensure_ascii=False) + '\n')
                     processed_count += 1
-                    # Progress indicator for writing phase
                     if processed_count % 1000 == 0:
                         elapsed_time = time.time() - start_time
                         records_per_second = processed_count / elapsed_time if elapsed_time > 0 else 0
@@ -117,25 +115,20 @@ def read_ip_timestamp_and_all_data(input_file_path):
         else:
             raise ValueError("Unsupported file format. Please use CSV or XLSX.")
 
-        # Normalize column names to lowercase for case-insensitive checking and access
         df.columns = df.columns.str.lower()
 
-        # Check for required columns
-        if not all(col in df.columns for col in ['ip', 'timestamp']): # Changed to lowercase
+        if not all(col in df.columns for col in ['ip', 'timestamp']):
             raise ValueError("Input file must contain columns named 'ip' and 'timestamp' (case-insensitive).")
 
         all_rows_data = []
         for index, row in df.iterrows():
-            row_dict = row.to_dict() # Convert pandas Series (row) to a Python dictionary
+            row_dict = row.to_dict()
 
-            # Rename 'ip' and 'timestamp' keys to 'IP' and 'Timestamp' (if they are not already)
-            # This ensures consistency for downstream functions expecting 'IP' and 'Timestamp'
             if 'ip' in row_dict and 'IP' not in row_dict:
                 row_dict['IP'] = row_dict.pop('ip')
             if 'timestamp' in row_dict and 'Timestamp' not in row_dict:
                 row_dict['Timestamp'] = row_dict.pop('timestamp')
 
-            # Process timestamp toYYYYMMDD format
             timestamp_str = str(row_dict.get('Timestamp')) if pd.notna(row_dict.get('Timestamp')) else None
             formatted_timestamp = None
             if timestamp_str and timestamp_str.lower() != 'nan':
@@ -147,10 +140,9 @@ def read_ip_timestamp_and_all_data(input_file_path):
                         datetime.strptime(timestamp_str, '%Y%m%d')
                         formatted_timestamp = timestamp_str
                     except ValueError:
-                        # print(f"Warning: Invalid timestamp format '{timestamp_str}' for IP {row_dict.get('IP')}. Skipping timestamp.", file=sys.stderr)
                         formatted_timestamp = None
             
-            row_dict['Timestamp'] = formatted_timestamp # Update the dictionary with formatted timestamp
+            row_dict['Timestamp'] = formatted_timestamp
             all_rows_data.append(row_dict)
         return all_rows_data
 
@@ -160,7 +152,9 @@ def read_ip_timestamp_and_all_data(input_file_path):
 
 # --- Main Script ---
 if __name__ == "__main__":
-    # Retrieve API token from environment variable
+    # Record the start time of the entire script
+    start_main_time = time.time()
+
     api_token = os.environ.get("TOKEN")
     if not api_token:
         print("Error: TOKEN environment variable not set.", file=sys.stderr)
@@ -177,28 +171,28 @@ if __name__ == "__main__":
         print(f"Error: Input file not found at {input_file_path}", file=sys.stderr)
         sys.exit(1)
 
-    # Extract the directory from the input file path
     output_dir = os.path.dirname(input_file_path)
+    input_file_basename = os.path.basename(input_file_path)
+    input_file_name_without_ext = os.path.splitext(input_file_basename)[0]
 
-    # Get the output file name from the user
-    output_file_name = input("Enter the desired output file name (e.g., ip_data.jsonl): ").strip()
-    if not output_file_name:
-        output_file_path = os.path.join(output_dir, default_output_file)
-        print(f"Using default output file name: {default_output_file}")
+    default_output_file_name = f"{input_file_name_without_ext}_SpurEnrichment.json"
+
+    output_file_name_input = input(f"Enter the desired output file name (e.g., ip_data_enriched.json), or press Enter for default ({default_output_file_name}): ").strip()
+    
+    if not output_file_name_input:
+        output_file_path = os.path.join(output_dir, default_output_file_name)
+        print(f"Using default output file name: {default_output_file_name}")
     else:
-        # Sanitize the filename
-        output_file_name = "".join(x for x in output_file_name if x.isalnum() or x in "._-")
-        if not output_file_name.endswith(".jsonl"):
-            output_file_name += ".jsonl"
-        output_file_path = os.path.join(output_dir, output_file_name)
+        output_file_name_input = "".join(x for x in output_file_name_input if x.isalnum() or x in "._-")
+        if not output_file_name_input.endswith(".json"):
+            output_file_name_input += ".json"
+        output_file_path = os.path.join(output_dir, output_file_name_input)
 
     print(f"Reading data from {input_file_path}...")
-    # Read all rows including IP, Timestamp, and any other columns
     all_input_rows = read_ip_timestamp_and_all_data(input_file_path)
     total_ips = len(all_input_rows)
     print(f"Read {total_ips} records for enrichment.")
 
-    # Filter out invalid IPs before submission to executor
     valid_records_for_enrichment = [
         row for row in all_input_rows 
         if row.get('IP') and str(row['IP']).lower() != 'nan'
@@ -210,14 +204,13 @@ if __name__ == "__main__":
 
     print(f"Starting enrichment for {len(valid_records_for_enrichment)} valid records in parallel...")
 
-    # Use ThreadPoolExecutor for parallel processing
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # Submit each full row dictionary to enrich_ip, passing the api_token
-        # functools.partial could also be used here for clarity if needed
-        # lambda is used to pass the api_token to the enrich_ip function
         results_iterator = executor.map(lambda row: enrich_ip(row, api_token), valid_records_for_enrichment)
-        
-        # Stream the results directly to the JSONL file
-        write_to_jsonl_stream(results_iterator, output_file_path)
+        write_to_json_stream(results_iterator, output_file_path)
 
     print("All enrichment tasks completed and results written to file.")
+
+    # Record the end time and calculate total runtime
+    end_main_time = time.time()
+    total_runtime = end_main_time - start_main_time
+    print(f"Total script runtime: {time.strftime('%H:%M:%S', time.gmtime(total_runtime))}")
