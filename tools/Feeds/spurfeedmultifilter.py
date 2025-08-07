@@ -87,7 +87,7 @@ def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, filt
     if len(filter_criteria) > 1:
         filename_parts.append(overall_match_type.upper())
 
-    default_filename = "".join(filename_parts) + ".json"
+    default_filename = "".join(filename_parts) + ".json" # Changed from .jsonl
     
     prompt_message = f"Enter the desired output file name (e.g., {default_filename}): "
     user_output_filename = input(prompt_message).strip()
@@ -97,8 +97,8 @@ def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, filt
         return default_filename
     else:
         sanitized_filename = "".join(x for x in user_output_filename if x.isalnum() or x in "._-")
-        if not sanitized_filename.lower().endswith(".json"):
-            sanitized_filename += ".json"
+        if not sanitized_filename.lower().endswith(".json"): # Changed from .jsonl
+            sanitized_filename += ".json" # Changed from .jsonl
         return sanitized_filename
 
 def get_file_chunks(filepath, num_chunks):
@@ -159,7 +159,17 @@ def process_file_chunk(args_tuple):
                     match_type_keywords = criterion['match_type_keywords']
 
                     source_value_raw = ""
-                    if key_name:
+                    
+                    # New logic to handle searching across all list items
+                    if key_name and key_name.startswith('tunnels_') and 'tunnels' in json_obj and isinstance(json_obj['tunnels'], list):
+                        sub_key = key_name.split('_', 1)[1] # Get the key after 'tunnels_'
+                        source_values = []
+                        for tunnel_item in json_obj['tunnels']:
+                            if isinstance(tunnel_item, dict) and sub_key in tunnel_item:
+                                source_values.append(str(tunnel_item[sub_key]))
+                        source_value_raw = ','.join(source_values)
+                    
+                    elif key_name:
                         flattened_obj = flatten_json(json_obj)
                         source_value_raw = str(flattened_obj.get(key_name, ''))
                     else:
@@ -240,44 +250,43 @@ def process_file_chunk(args_tuple):
 
 def download_and_decompress_gz_to_file(url, token, output_path):
     """
-    Downloads a .gz file from the given URL, decompresses it in a memory-efficient way,
-    and saves it to output_path.
+    Downloads a .gz file from the given URL, decompresses it in chunks, and saves it to output_path.
+    This approach is more memory-efficient for very large files.
     """
     headers = {"Token": token}
-    chunk_size = 8192 # Define chunk size for streaming
-    
     try:
         print(f"Downloading from: {url}")
         response = requests.get(url, headers=headers, stream=True)
         response.raise_for_status()
 
-        gzipped_output_path = output_path + ".gz"
-        with open(gzipped_output_path, 'wb') as outfile:
-            for chunk in response.iter_content(chunk_size=chunk_size):
+        with open(output_path, 'wb') as outfile:
+            for chunk in response.iter_content(chunk_size=8192):
                 outfile.write(chunk)
-        print(f"Successfully downloaded gzipped file to: {gzipped_output_path}")
+        print(f"Successfully downloaded gzipped file to: {output_path}")
 
-        decompressed_file_path = os.path.splitext(gzipped_output_path)[0]
+        decompressed_file_path = os.path.splitext(output_path)[0]
         if not decompressed_file_path.lower().endswith('.json'):
             decompressed_file_path += '.json'
 
-        print(f"Decompressing {gzipped_output_path} to {decompressed_file_path}...")
+        print(f"Decompressing {output_path} to {decompressed_file_path}...")
         
         # Decompress in chunks to be memory-efficient
-        with gzip.open(gzipped_output_path, 'rb') as f_in:
+        with gzip.open(output_path, 'rb') as f_in:
             with open(decompressed_file_path, 'wb') as f_out:
+                buffer_size = 1024 * 1024  # 1MB buffer
                 while True:
-                    chunk = f_in.read(chunk_size)
+                    chunk = f_in.read(buffer_size)
                     if not chunk:
                         break
                     f_out.write(chunk)
+        
         print(f"Successfully decompressed to {decompressed_file_path}")
         
         try:
-            os.remove(gzipped_output_path)
-            print(f"Deleted temporary gzipped file: {gzipped_output_path}")
+            os.remove(output_path)
+            print(f"Deleted temporary gzipped file: {output_path}")
         except OSError as e:
-            print(f"Error deleting gzipped file {gzipped_output_path}: {e}", file=sys.stderr)
+            print(f"Error deleting gzipped file {output_path}: {e}", file=sys.stderr)
 
         return decompressed_file_path
     except requests.exceptions.RequestException as e:
@@ -340,6 +349,7 @@ if __name__ == "__main__":
 
         # Updated regex to capture optional 6-digit timestamp for AnonResRT
         # Also updated to include new base feed names and account for renamed "Anonymous-Residential"
+        # The regex for parsing existing files should also look for the .json extension instead of .jsonl
         match = re.search(r'(\d{8})(\d{6})?(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetrics|DCH|AnonymousIPv6|AnonymousResidentialIPv6|AnonymousResidential|AnonymousResidentialRT|IPSummary|SimilarIPs)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
         if match:
             current_date_ymd = match.group(1)
@@ -434,7 +444,7 @@ if __name__ == "__main__":
 
 
         if needs_decompression:
-            download_filename += ".json"
+            download_filename += ".json.gz"
             decompressed_source_file_path = download_and_decompress_gz_to_file(api_url, os.environ.get('TOKEN'), download_filename)
         else:
             download_filename += output_ext
@@ -489,7 +499,7 @@ if __name__ == "__main__":
                 sample_lines = []
                 try:
                     with open(decompressed_source_file_path, 'r', encoding='utf-8') as f_sample:
-                        for _ in range(1000):
+                        for _ in range(1000000): # Increased sample size to 1,000,000
                             line = f_sample.readline()
                             if not line: break
                             sample_lines.append(line)
@@ -502,12 +512,20 @@ if __name__ == "__main__":
                     try:
                         obj = json.loads(line.strip())
                         flattened_obj = flatten_json(obj)
-                        suggested_keys.update(flattened_obj.keys())
+                        # New logic to handle indexed keys
+                        temp_keys = set()
+                        for key in flattened_obj.keys():
+                            match = re.match(r'(.+?)_\d+_(.+)', key)
+                            if match:
+                                temp_keys.add(f"{match.group(1)}_{match.group(2)}")
+                            else:
+                                temp_keys.add(key)
+                        suggested_keys.update(temp_keys)
                     except json.JSONDecodeError:
                         pass
 
                 if suggested_keys:
-                    print("\nAvailable keys for filtering (flattened names, sampled from first few lines):") 
+                    print("\nAvailable keys for filtering (flattened names, sampled from first 1,000,000 lines):") 
                     for key in sorted(list(suggested_keys)):
                         print(f"  - {key}")
                     print("\n")
@@ -519,6 +537,48 @@ if __name__ == "__main__":
                     print("  No key name provided for this filter. Skipping this filter condition.", file=sys.stderr)
                     continue
 
+                # New logic: Ask to sample values for the chosen key
+                see_sample_values = input(f"  Would you like to see a sample of values for the key '{current_filter_key}'? (Y/N): ").strip().upper()
+                if see_sample_values == 'Y':
+                    print(f"\n--- Sampling values for key '{current_filter_key}' (from first 1,000,000 lines) ---")
+                    unique_values = set()
+                    for line in sample_lines:
+                        try:
+                            obj = json.loads(line.strip())
+                            # New logic to handle the simplified key for sampling
+                            if re.match(r'(.+?)_(.+)', current_filter_key):
+                                root_key, sub_key = current_filter_key.split('_', 1)
+                                if root_key in obj and isinstance(obj[root_key], list):
+                                    for item in obj[root_key]:
+                                        if isinstance(item, dict) and sub_key in item:
+                                            value = item[sub_key]
+                                            if isinstance(value, str):
+                                                individual_values = value.split(',')
+                                                for individual_value in individual_values:
+                                                    unique_values.add(individual_value.strip())
+                                            else:
+                                                unique_values.add(str(value).strip())
+                            else:
+                                flattened_obj = flatten_json(obj)
+                                value = flattened_obj.get(current_filter_key)
+                                if value is not None:
+                                    if isinstance(value, str):
+                                        individual_values = value.split(',')
+                                        for individual_value in individual_values:
+                                            unique_values.add(individual_value.strip())
+                                    else:
+                                        unique_values.add(str(value).strip())
+                        except json.JSONDecodeError:
+                            pass
+                    
+                    if unique_values:
+                        print("Unique values found:")
+                        for value in sorted(list(unique_values)):
+                            print(f"  - {value}")
+                        print("\n")
+                    else:
+                        print("No values found for this key in the sample data.\n")
+                        
                 current_keywords_input = input(f"  Enter keywords for key '{current_filter_key}' (comma-separated, e.g., 'malicious,trojan'): ").strip()
             
             elif perform_key_specific_filter_choice == 'N':
@@ -571,7 +631,8 @@ if __name__ == "__main__":
     else:
         perform_filter = 'Y'
 
-    # --- Step 3: Get filename for filtered content (JSON) ---
+    # --- Step 3: Get filename for filtered content (JSONL) ---
+    # The get_output_filename function now generates .json files
     filtered_output_filename = get_output_filename(
         current_date_ymd, 
         current_time_hms, # Pass the timestamp
@@ -602,6 +663,7 @@ if __name__ == "__main__":
     print(f"Using {NUM_PARALLEL_PROCESSORS} parallel processors for filtering.")
 
     try:
+        # Output file opened with .json extension
         with open(output_file_path, 'w', encoding='utf-8') as outfile:
             chunks = get_file_chunks(decompressed_source_file_path, NUM_PARALLEL_PROCESSORS)
             
