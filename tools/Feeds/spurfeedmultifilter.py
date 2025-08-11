@@ -160,20 +160,19 @@ def process_file_chunk(args_tuple):
 
                     source_value_raw = ""
                     
-                    # New logic to handle searching across all list items
-                    if key_name and key_name.startswith('tunnels_') and 'tunnels' in json_obj and isinstance(json_obj['tunnels'], list):
-                        sub_key = key_name.split('_', 1)[1] # Get the key after 'tunnels_'
-                        source_values = []
-                        for tunnel_item in json_obj['tunnels']:
-                            if isinstance(tunnel_item, dict) and sub_key in tunnel_item:
-                                source_values.append(str(tunnel_item[sub_key]))
-                        source_value_raw = ','.join(source_values)
+                    # Logic to handle searching across flattened keys
+                    flattened_obj = flatten_json(json_obj)
                     
-                    elif key_name:
-                        flattened_obj = flatten_json(json_obj)
-                        source_value_raw = str(flattened_obj.get(key_name, ''))
+                    # New logic to handle simplified key names
+                    if key_name.startswith('tunnels_'):
+                        sub_key = key_name.split('_', 1)[1]
+                        # Find all flattened keys that match the simplified key
+                        relevant_keys = [k for k in flattened_obj.keys() if k.startswith('tunnels_') and k.endswith(f'_{sub_key}')]
+                        
+                        source_values = [str(flattened_obj[k]) for k in relevant_keys if k in flattened_obj]
+                        source_value_raw = ','.join(source_values)
                     else:
-                        source_value_raw = line_stripped
+                        source_value_raw = str(flattened_obj.get(key_name, ''))
 
                     # Evaluate keywords within this single criterion
                     current_kws_match_status = False # Default for OR, will be True for AND
@@ -499,7 +498,7 @@ if __name__ == "__main__":
                 sample_lines = []
                 try:
                     with open(decompressed_source_file_path, 'r', encoding='utf-8') as f_sample:
-                        for _ in range(1000000): # Increased sample size to 1,000,000
+                        for _ in range(500000): # Sample up to 500,000 lines
                             line = f_sample.readline()
                             if not line: break
                             sample_lines.append(line)
@@ -508,69 +507,70 @@ if __name__ == "__main__":
                     sample_lines = []
 
                 suggested_keys = set()
+                flattened_keys = set()
                 for line in sample_lines:
                     try:
                         obj = json.loads(line.strip())
-                        flattened_obj = flatten_json(obj)
-                        # New logic to handle indexed keys
-                        temp_keys = set()
-                        for key in flattened_obj.keys():
+                        temp_flattened = flatten_json(obj)
+                        flattened_keys.update(temp_flattened.keys())
+                        for key in temp_flattened.keys():
                             match = re.match(r'(.+?)_\d+_(.+)', key)
                             if match:
-                                temp_keys.add(f"{match.group(1)}_{match.group(2)}")
+                                simplified_key = f"{match.group(1)}_{match.group(2)}"
+                                suggested_keys.add(simplified_key)
                             else:
-                                temp_keys.add(key)
-                        suggested_keys.update(temp_keys)
+                                suggested_keys.add(key)
                     except json.JSONDecodeError:
                         pass
-
+                
                 if suggested_keys:
-                    print("\nAvailable keys for filtering (flattened names, sampled from first 1,000,000 lines):") 
+                    print("\nAvailable keys for filtering (simplified names, sampled from first 500,000 lines):") 
                     for key in sorted(list(suggested_keys)):
                         print(f"  - {key}")
                     print("\n")
                 else:
                     print("\nCould not determine key names from sample. Please enter key name carefully.") 
 
-                current_filter_key = input("  Enter the exact key name for this filter (e.g., 'client_behaviors', 'ip', 'organization'): ").strip()
+                current_filter_key = input("  Enter the exact key name for this filter (e.g., 'client_behaviors', 'tunnels_operator', 'ip'): ").strip()
                 if not current_filter_key:
                     print("  No key name provided for this filter. Skipping this filter condition.", file=sys.stderr)
                     continue
 
-                # New logic: Ask to sample values for the chosen key
+                # Logic to handle sampling for both standard and simplified keys
                 see_sample_values = input(f"  Would you like to see a sample of values for the key '{current_filter_key}'? (Y/N): ").strip().upper()
                 if see_sample_values == 'Y':
-                    print(f"\n--- Sampling values for key '{current_filter_key}' (from first 1,000,000 lines) ---")
+                    print(f"\n--- Sampling values for key '{current_filter_key}' (from first 500,000 lines) ---")
                     unique_values = set()
-                    for line in sample_lines:
-                        try:
-                            obj = json.loads(line.strip())
-                            # New logic to handle the simplified key for sampling
-                            if re.match(r'(.+?)_(.+)', current_filter_key):
-                                root_key, sub_key = current_filter_key.split('_', 1)
-                                if root_key in obj and isinstance(obj[root_key], list):
-                                    for item in obj[root_key]:
-                                        if isinstance(item, dict) and sub_key in item:
-                                            value = item[sub_key]
-                                            if isinstance(value, str):
-                                                individual_values = value.split(',')
-                                                for individual_value in individual_values:
-                                                    unique_values.add(individual_value.strip())
-                                            else:
-                                                unique_values.add(str(value).strip())
-                            else:
-                                flattened_obj = flatten_json(obj)
-                                value = flattened_obj.get(current_filter_key)
-                                if value is not None:
-                                    if isinstance(value, str):
-                                        individual_values = value.split(',')
-                                        for individual_value in individual_values:
-                                            unique_values.add(individual_value.strip())
-                                    else:
-                                        unique_values.add(str(value).strip())
-                        except json.JSONDecodeError:
-                            pass
                     
+                    # Determine which flattened keys correspond to the user's input key
+                    target_flattened_keys = []
+                    match = re.match(r'(.+?)_(.+)', current_filter_key)
+                    if match:
+                        root_key, sub_key = match.groups()
+                        for f_key in flattened_keys:
+                            if f_key.startswith(f"{root_key}_") and f_key.endswith(f"_{sub_key}"):
+                                target_flattened_keys.append(f_key)
+                    else:
+                        if current_filter_key in flattened_keys:
+                            target_flattened_keys.append(current_filter_key)
+                    
+                    if target_flattened_keys:
+                        for line in sample_lines:
+                            try:
+                                obj = json.loads(line.strip())
+                                flattened_obj = flatten_json(obj)
+                                for f_key in target_flattened_keys:
+                                    value = flattened_obj.get(f_key)
+                                    if value is not None:
+                                        if isinstance(value, str):
+                                            individual_values = value.split(',')
+                                            for individual_value in individual_values:
+                                                unique_values.add(individual_value.strip())
+                                        else:
+                                            unique_values.add(str(value).strip())
+                            except json.JSONDecodeError:
+                                pass
+
                     if unique_values:
                         print("Unique values found:")
                         for value in sorted(list(unique_values)):
@@ -578,6 +578,15 @@ if __name__ == "__main__":
                         print("\n")
                     else:
                         print("No values found for this key in the sample data.\n")
+                    
+                    # New prompt after sampling values
+                    proceed_with_key_filter = input(f"  Would you like to proceed filtering for this key? (Y/N): ").strip().upper()
+                    if proceed_with_key_filter != 'Y':
+                        # This breaks out of the `if perform_key_specific_filter_choice == 'Y'` block
+                        # and continues the outer while loop, asking to add another filter.
+                        # We need to restart the outer loop to ask for a new key name
+                        continue 
+                    # If user says Yes, continue to the keyword input part below
                         
                 current_keywords_input = input(f"  Enter keywords for key '{current_filter_key}' (comma-separated, e.g., 'malicious,trojan'): ").strip()
             
