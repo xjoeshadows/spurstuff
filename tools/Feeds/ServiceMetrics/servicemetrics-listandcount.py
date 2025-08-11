@@ -145,9 +145,9 @@ def main():
 
     file_url = 'https://feeds.spur.us/v2/service-metrics/latest.json.gz'
     
-    # Generate output filename in YYYYMMDD-ServiceMetricsList.txt format
+    # Generate output filename in YYYYMMDDServiceMetricsList.txt format
     current_date_ymd = datetime.datetime.now().strftime("%Y%m%d") # Changed %y to %Y for 4-digit year
-    output_list_filename = f"{current_date_ymd}-ServiceMetricsList.txt"
+    output_list_filename = f"{current_date_ymd}ServiceMetricsList.txt"
     # New filename for the full decompressed JSON data
     output_full_json_filename = f"{current_date_ymd}ServiceMetricsAll.json"
 
