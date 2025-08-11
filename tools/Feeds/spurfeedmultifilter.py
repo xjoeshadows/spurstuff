@@ -346,10 +346,8 @@ if __name__ == "__main__":
         decompressed_source_file_path = provided_file_path
         print(f"Using provided file: {decompressed_source_file_path}")
 
-        # Updated regex to capture optional 6-digit timestamp for AnonResRT
-        # Also updated to include new base feed names and account for renamed "Anonymous-Residential"
-        # The regex for parsing existing files should also look for the .json extension instead of .jsonl
-        match = re.search(r'(\d{8})(\d{6})?(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetrics|DCH|AnonymousIPv6|AnonymousResidentialIPv6|AnonymousResidential|AnonymousResidentialRT|IPSummary|SimilarIPs)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
+        # Updated regex to explicitly include "ServiceMetricsAll"
+        match = re.search(r'(\d{8})(\d{6})?(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetricsAll|DCH|AnonymousIPv6|AnonymousResidentialIPv6|AnonymousResidential|AnonymousResidentialRT|IPSummary|SimilarIPs)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
         if match:
             current_date_ymd = match.group(1)
             # Check if the optional timestamp group exists and is not None
@@ -582,9 +580,7 @@ if __name__ == "__main__":
                     # New prompt after sampling values
                     proceed_with_key_filter = input(f"  Would you like to proceed filtering for this key? (Y/N): ").strip().upper()
                     if proceed_with_key_filter != 'Y':
-                        # This breaks out of the `if perform_key_specific_filter_choice == 'Y'` block
-                        # and continues the outer while loop, asking to add another filter.
-                        # We need to restart the outer loop to ask for a new key name
+                        # This breaks out of the inner loop and restarts the outer one
                         continue 
                     # If user says Yes, continue to the keyword input part below
                         
