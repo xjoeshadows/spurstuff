@@ -143,8 +143,8 @@ if __name__ == "__main__":
     # 3. Determine default output filename based on input file's date and name
     input_file_date = get_date_from_filename_or_creation(input_file_path)
     
-    # New default output filename format: [input filename's YYYYMMDD]-ServiceMetricsList.txt
-    default_output_filename = f"{input_file_date}-ServiceMetricsList.txt"
+    # New default output filename format: [input filename's YYYYMMDDServiceMetricsList.txt
+    default_output_filename = f"{input_file_date}ServiceMetricsList.txt"
 
     # 4. Prompt for output filename
     output_filename_prompt = f"Enter the desired output filename for the tags (e.g., {default_output_filename}): "
