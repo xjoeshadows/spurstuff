@@ -56,8 +56,8 @@ def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, filt
     """
     filename_parts = [current_date_ymd]
     
-    # Add timestamp only for AnonResRT feed
-    if base_feed_name == "AnonResRT" and current_time_hms:
+    # Add timestamp only for AnonResRT and AnonymousResidentialRT feeds
+    if (base_feed_name == "AnonResRT" or base_feed_name == "AnonymousResidentialRT") and current_time_hms:
         filename_parts.append(current_time_hms)
         
     filename_parts.append(base_feed_name)
@@ -87,7 +87,7 @@ def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, filt
     if len(filter_criteria) > 1:
         filename_parts.append(overall_match_type.upper())
 
-    default_filename = "".join(filename_parts) + ".json" # Changed from .jsonl
+    default_filename = "".join(filename_parts) + ".json"
     
     prompt_message = f"Enter the desired output file name (e.g., {default_filename}): "
     user_output_filename = input(prompt_message).strip()
@@ -97,8 +97,8 @@ def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, filt
         return default_filename
     else:
         sanitized_filename = "".join(x for x in user_output_filename if x.isalnum() or x in "._-")
-        if not sanitized_filename.lower().endswith(".json"): # Changed from .jsonl
-            sanitized_filename += ".json" # Changed from .jsonl
+        if not sanitized_filename.lower().endswith(".json"):
+            sanitized_filename += ".json"
         return sanitized_filename
 
 def get_file_chunks(filepath, num_chunks):
@@ -384,13 +384,14 @@ if __name__ == "__main__":
             "5": {"name": "Anonymous-Residential IPv6 (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential-ipv6/latest.json.gz", "base_feed_name": "AnonymousResidentialIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
             "6": {"name": "Anonymous-Residential (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/0000.json.gz", "base_feed_name": "AnonymousResidentialHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
             "7": {"name": "Anonymous-Residential Realtime (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/realtime/latest.json.gz", "base_feed_name": "AnonResRT", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True}, # Base name kept as AnonResRT for filename consistency with timestamp
-            "8": {"name": "IPGeo (MMDB - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False, "is_json": False},
-            "9": {"name": "IPGeo (JSON - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.json.gz", "base_feed_name": "IPGeoJSON", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "10": {"name": "Data Center Hosting (DCH) (Latest)", "url": "https://feeds.spur.us/v2/dch/latest.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "11": {"name": "Service Metrics (Latest)", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "12": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsAllHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
-            "13": {"name": "IPSummary (Latest)", "url": "https://feeds.spur.us/v2/ipsummary/latest.json.gz", "base_feed_name": "IPSummary", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "14": {"name": "Similar IPs (Latest)", "url": "https://feeds.spur.us/v1/similar-ips/latest.json.gz", "base_feed_name": "SimilarIPs", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "8": {"name": "Anonymous-Residential Realtime (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/{}.json.gz", "base_feed_name": "AnonymousResidentialRT", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+            "9": {"name": "IPGeo (MMDB - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False, "is_json": False},
+            "10": {"name": "IPGeo (JSON - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.json.gz", "base_feed_name": "IPGeoJSON", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "11": {"name": "Data Center Hosting (DCH) (Latest)", "url": "https://feeds.spur.us/v2/dch/latest.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "12": {"name": "Service Metrics (Latest)", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "13": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsAllHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+            "14": {"name": "IPSummary (Latest)", "url": "https://feeds.spur.us/v2/ipsummary/latest.json.gz", "base_feed_name": "IPSummary", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            "15": {"name": "Similar IPs (Latest)", "url": "https://feeds.spur.us/v1/similar-ips/latest.json.gz", "base_feed_name": "SimilarIPs", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
         }
 
         selected_feed = None
@@ -418,13 +419,27 @@ if __name__ == "__main__":
                 if re.fullmatch(r'\d{8}', historical_date_ymd):
                     try:
                         datetime.datetime.strptime(historical_date_ymd, "%Y%m%d")
-                        api_url = selected_feed["url_template"].format(historical_date_ymd)
-                        current_date_ymd = historical_date_ymd
-                        date_input_valid = True
+                        
+                        if base_feed_name == "AnonymousResidentialRT":
+                            historical_time_hhmm = input("Enter the time in HHMM format (e.g., 1430): ").strip()
+                            if re.fullmatch(r'\d{4}', historical_time_hhmm):
+                                api_url = selected_feed["url_template"].format(historical_date_ymd, historical_time_hhmm)
+                                current_time_hms = historical_time_hhmm + '00' # Add seconds for filename consistency
+                                date_input_valid = True
+                            else:
+                                print("Invalid time format. Please enter HHMM format.")
+                        else:
+                            api_url = selected_feed["url_template"].format(historical_date_ymd)
+                            date_input_valid = True
+                            
+                        if date_input_valid:
+                            current_date_ymd = historical_date_ymd
+                            
                     except ValueError:
                         print("Invalid date. Please enter a real date in YYYYMMDD format.")
                 else:
                     print("Invalid format. Please enter the date in YYYYMMDD format (e.g., 20231231).")
+
 
         download_filename = f"{current_date_ymd}"
         if base_feed_name == "AnonResRT": # Keep AnonResRT for timestamping logic as it's realtime
@@ -496,7 +511,7 @@ if __name__ == "__main__":
                 sample_lines = []
                 try:
                     with open(decompressed_source_file_path, 'r', encoding='utf-8') as f_sample:
-                        for _ in range(500000): # Sample up to 500,000 lines
+                        for _ in range(500000):
                             line = f_sample.readline()
                             if not line: break
                             sample_lines.append(line)
