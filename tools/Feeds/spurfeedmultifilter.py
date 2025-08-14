@@ -328,170 +328,179 @@ if __name__ == "__main__":
         print("Error: TOKEN environment variable not set. Please set it to your Spur API token.", file=sys.stderr)
         sys.exit(1)
 
-    current_date_ymd = datetime.date.today().strftime("%Y%m%d")
-    current_time_hms = None # Initialize timestamp for non-realtime feeds
-    decompressed_source_file_path = None
-    base_feed_name = "UnknownFeed" 
-    is_feed_json = True # Assume JSON by default
-
-    # --- Step 1: Get or Download Feed ---
-    use_existing_file_input = input("Do you want to use an existing Spur Feed file? (Y/N): ").strip().upper()
-
-    if use_existing_file_input == 'Y':
-        provided_file_path = input("Please enter the full path to your Spur Feed file (e.g., '/path/to/20240610Anonymous-Residential.json' or '/path/to/20240610123000AnonResRT.json'): ").strip()
-        if not os.path.exists(provided_file_path):
-            print(f"Error: Provided input file '{provided_file_path}' not found. Exiting.", file=sys.stderr)
-            sys.exit(1)
+    while True:
+        current_date_ymd = datetime.date.today().strftime("%Y%m%d")
+        current_time_hms = None # Initialize timestamp for non-realtime feeds
+        decompressed_source_file_path = None
+        base_feed_name = "UnknownFeed" 
+        is_feed_json = True # Assume JSON by default
         
-        decompressed_source_file_path = provided_file_path
-        print(f"Using provided file: {decompressed_source_file_path}")
+        # --- Step 1: Get or Download Feed ---
+        use_existing_file_input = input("Do you want to use an existing Spur Feed file? (Y/N): ").strip().upper()
 
-        # Updated regex to explicitly include "ServiceMetricsAll"
-        match = re.search(r'(\d{8})(\d{6})?(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetricsAll|DCH|AnonymousIPv6|AnonymousResidentialIPv6|AnonymousResidential|AnonymousResidentialRT|IPSummary|SimilarIPs)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
-        if match:
-            current_date_ymd = match.group(1)
-            # Check if the optional timestamp group exists and is not None
-            if match.group(2):
-                current_time_hms = match.group(2)
-            base_feed_name = match.group(3)
-            # Determine if the existing file is JSON based on its detected feed type
-            if base_feed_name in ["IPGeoMMDB"]: # Add other non-JSON feeds here if necessary
-                is_feed_json = False
-        else:
-            name_without_ext = os.path.splitext(os.path.basename(provided_file_path))[0]
-            # Try to extract base feed name, excluding potential date and timestamp
-            base_feed_name_candidate = re.sub(r'^\d{8}(\d{6})?', '', name_without_ext)
-            if base_feed_name_candidate:
-                base_feed_name = base_feed_name_candidate
-                # Attempt to normalize the base_feed_name if it was parsed as 'AnonRes' variants
-                if "AnonRes" in base_feed_name and "AnonResRT" not in base_feed_name: # Exclude AnonResRT from this replacement
-                    base_feed_name = base_feed_name.replace("AnonRes", "AnonymousResidential")
-                
-            else:
-                base_feed_name = "CustomFeed"
-            print(f"Warning: Could not extract date and standard FeedName from provided filename. Using derived name '{base_feed_name}'.", file=sys.stderr)
-            # If we couldn't parse it, assume it's JSON unless its extension is .mmdb
-            if not provided_file_path.lower().endswith('.json') and not provided_file_path.lower().endswith('.json.gz'):
-                is_feed_json = False
-
-
-    elif use_existing_file_input == 'N':
-        feed_options = {
-            "1": {"name": "Anonymous (Latest)", "url": "https://feeds.spur.us/v2/anonymous/latest.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "2": {"name": "Anonymous IPv6 (Latest)", "url": "https://feeds.spur.us/v2/anonymous-ipv6/latest.json.gz", "base_feed_name": "AnonymousIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "3": {"name": "Anonymous (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.json.gz", "base_feed_name": "AnonymousHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
-            "4": {"name": "Anonymous-Residential (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/latest.json.gz", "base_feed_name": "AnonymousResidential", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "5": {"name": "Anonymous-Residential IPv6 (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential-ipv6/latest.json.gz", "base_feed_name": "AnonymousResidentialIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "6": {"name": "Anonymous-Residential (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/0000.json.gz", "base_feed_name": "AnonymousResidentialHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
-            "7": {"name": "Anonymous-Residential Realtime (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/realtime/latest.json.gz", "base_feed_name": "AnonResRT", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True}, # Base name kept as AnonResRT for filename consistency with timestamp
-            "8": {"name": "Anonymous-Residential Realtime (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/{}.json.gz", "base_feed_name": "AnonymousResidentialRT", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
-            "9": {"name": "IPGeo (MMDB - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False, "is_json": False},
-            "10": {"name": "IPGeo (JSON - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.json.gz", "base_feed_name": "IPGeoJSON", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "11": {"name": "Data Center Hosting (DCH) (Latest)", "url": "https://feeds.spur.us/v2/dch/latest.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "12": {"name": "Service Metrics (Latest)", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "13": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsAllHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
-            "14": {"name": "IPSummary (Latest)", "url": "https://feeds.spur.us/v2/ipsummary/latest.json.gz", "base_feed_name": "IPSummary", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-            "15": {"name": "Similar IPs (Latest)", "url": "https://feeds.spur.us/v1/similar-ips/latest.json.gz", "base_feed_name": "SimilarIPs", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-        }
-
-        selected_feed = None
-        while selected_feed is None:
-            print("\nPlease select a feed to download:")
-            for key, value in feed_options.items():
-                print(f"  {key}: {value['name']}")
+        if use_existing_file_input == 'Y':
+            provided_file_path = input("Please enter the full path to your Spur Feed file (e.g., '/path/to/20240610Anonymous-Residential.json' or '/path/to/20240610123000AnonResRT.json'): ").strip()
+            if not os.path.exists(provided_file_path):
+                print(f"Error: Provided input file '{provided_file_path}' not found. Exiting.", file=sys.stderr)
+                sys.exit(1)
             
-            choice = input("Enter the number corresponding to your choice: ").strip()
-            selected_feed = feed_options.get(choice)
-            if selected_feed is None:
-                print("Invalid choice. Please enter a number from the list.")
+            decompressed_source_file_path = provided_file_path
+            print(f"Using provided file: {decompressed_source_file_path}")
 
-        api_url = selected_feed.get("url")
-        base_feed_name = selected_feed["base_feed_name"]
-        needs_decompression = selected_feed["needs_decompression"]
-        output_ext = selected_feed["output_ext"]
-        is_historical = selected_feed["is_historical"]
-        is_feed_json = selected_feed["is_json"] # Set is_feed_json based on selection
-
-        if is_historical:
-            date_input_valid = False
-            while not date_input_valid:
-                historical_date_ymd = input("Enter the date for the historical feed in YYYYMMDD format (e.g., 20231231): ").strip()
-                if re.fullmatch(r'\d{8}', historical_date_ymd):
-                    try:
-                        datetime.datetime.strptime(historical_date_ymd, "%Y%m%d")
-                        
-                        if base_feed_name == "AnonymousResidentialRT":
-                            historical_time_hhmm = input("Enter the time in HHMM format (e.g., 1430): ").strip()
-                            if re.fullmatch(r'\d{4}', historical_time_hhmm):
-                                api_url = selected_feed["url_template"].format(historical_date_ymd, historical_time_hhmm)
-                                current_time_hms = historical_time_hhmm + '00' # Add seconds for filename consistency
-                                date_input_valid = True
-                            else:
-                                print("Invalid time format. Please enter HHMM format.")
-                        else:
-                            api_url = selected_feed["url_template"].format(historical_date_ymd)
-                            date_input_valid = True
-                            
-                        if date_input_valid:
-                            current_date_ymd = historical_date_ymd
-                            
-                    except ValueError:
-                        print("Invalid date. Please enter a real date in YYYYMMDD format.")
+            # Updated regex to explicitly include "ServiceMetricsAll"
+            match = re.search(r'(\d{8})(\d{6})?(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetricsAll|DCH|AnonymousIPv6|AnonymousResidentialIPv6|AnonymousResidential|AnonymousResidentialRT|IPSummary|SimilarIPs)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
+            if match:
+                current_date_ymd = match.group(1)
+                # Check if the optional timestamp group exists and is not None
+                if match.group(2):
+                    current_time_hms = match.group(2)
+                base_feed_name = match.group(3)
+                # Determine if the existing file is JSON based on its detected feed type
+                if base_feed_name in ["IPGeoMMDB"]: # Add other non-JSON feeds here if necessary
+                    is_feed_json = False
+            else:
+                name_without_ext = os.path.splitext(os.path.basename(provided_file_path))[0]
+                # Try to extract base feed name, excluding potential date and timestamp
+                base_feed_name_candidate = re.sub(r'^\d{8}(\d{6})?', '', name_without_ext)
+                if base_feed_name_candidate:
+                    base_feed_name = base_feed_name_candidate
+                    # Attempt to normalize the base_feed_name if it was parsed as 'AnonRes' variants
+                    if "AnonRes" in base_feed_name and "AnonResRT" not in base_feed_name: # Exclude AnonResRT from this replacement
+                        base_feed_name = base_feed_name.replace("AnonRes", "AnonymousResidential")
+                    
                 else:
-                    print("Invalid format. Please enter the date in YYYYMMDD format (e.g., 20231231).")
+                    base_feed_name = "CustomFeed"
+                print(f"Warning: Could not extract date and standard FeedName from provided filename. Using derived name '{base_feed_name}'.", file=sys.stderr)
+                # If we couldn't parse it, assume it's JSON unless its extension is .mmdb
+                if not provided_file_path.lower().endswith('.json') and not provided_file_path.lower().endswith('.json.gz'):
+                    is_feed_json = False
 
 
-        download_filename = f"{current_date_ymd}"
-        if base_feed_name == "AnonResRT": # Keep AnonResRT for timestamping logic as it's realtime
-            current_time_hms = datetime.datetime.now().strftime("%H%M%S")
-            download_filename += f"{current_time_hms}"
-        
-        # Adjust base_feed_name for consistent filename generation if it's the old 'AnonRes'
-        if base_feed_name == "AnonRes": # Original base name for AnonRes (Latest)
-            download_filename += "AnonymousResidential"
-        elif base_feed_name == "AnonResHist": # Original base name for Anonymous-Residential (Historical)
-            download_filename += "AnonymousResidentialHist"
-        else: # For all other feeds including the new IPv6 ones and AnonResRT
-            download_filename += base_feed_name
+        elif use_existing_file_input == 'N':
+            feed_options = {
+                "1": {"name": "Anonymous (Latest)", "url": "https://feeds.spur.us/v2/anonymous/latest.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                "2": {"name": "Anonymous IPv6 (Latest)", "url": "https://feeds.spur.us/v2/anonymous-ipv6/latest.json.gz", "base_feed_name": "AnonymousIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                "3": {"name": "Anonymous (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.json.gz", "base_feed_name": "AnonymousHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                "4": {"name": "Anonymous-Residential (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/latest.json.gz", "base_feed_name": "AnonymousResidential", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                "5": {"name": "Anonymous-Residential IPv6 (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential-ipv6/latest.json.gz", "base_feed_name": "AnonymousResidentialIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                "6": {"name": "Anonymous-Residential (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/0000.json.gz", "base_feed_name": "AnonymousResidentialHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                "7": {"name": "Anonymous-Residential Realtime (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/realtime/latest.json.gz", "base_feed_name": "AnonResRT", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True}, # Base name kept as AnonResRT for filename consistency with timestamp
+                "8": {"name": "Anonymous-Residential Realtime (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/{}.json.gz", "base_feed_name": "AnonymousResidentialRT", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                "9": {"name": "IPGeo (MMDB - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False, "is_json": False},
+                "10": {"name": "IPGeo (JSON - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.json.gz", "base_feed_name": "IPGeoJSON", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                "11": {"name": "Data Center Hosting (DCH) (Latest)", "url": "https://feeds.spur.us/v2/dch/latest.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                "12": {"name": "Service Metrics (Latest)", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                "13": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsAllHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                "14": {"name": "IPSummary (Latest)", "url": "https://feeds.spur.us/v2/ipsummary/latest.json.gz", "base_feed_name": "IPSummary", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                "15": {"name": "Similar IPs (Latest)", "url": "https://feeds.spur.us/v1/similar-ips/latest.json.gz", "base_feed_name": "SimilarIPs", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            }
+
+            selected_feed = None
+            while selected_feed is None:
+                print("\nPlease select a feed to download:")
+                for key, value in feed_options.items():
+                    print(f"  {key}: {value['name']}")
+                
+                choice = input("Enter the number corresponding to your choice: ").strip()
+                selected_feed = feed_options.get(choice)
+                if selected_feed is None:
+                    print("Invalid choice. Please enter a number from the list.")
+
+            api_url = selected_feed.get("url")
+            base_feed_name = selected_feed["base_feed_name"]
+            needs_decompression = selected_feed["needs_decompression"]
+            output_ext = selected_feed["output_ext"]
+            is_historical = selected_feed["is_historical"]
+            is_feed_json = selected_feed["is_json"] # Set is_feed_json based on selection
+
+            if is_historical:
+                date_input_valid = False
+                while not date_input_valid:
+                    historical_date_ymd = input("Enter the date for the historical feed in YYYYMMDD format (e.g., 20231231): ").strip()
+                    if re.fullmatch(r'\d{8}', historical_date_ymd):
+                        try:
+                            datetime.datetime.strptime(historical_date_ymd, "%Y%m%d")
+                            
+                            if base_feed_name == "AnonymousResidentialRT":
+                                historical_time_hhmm = input("Enter the time in HHMM format (e.g., 1430): ").strip()
+                                if re.fullmatch(r'\d{4}', historical_time_hhmm):
+                                    api_url = selected_feed["url_template"].format(historical_date_ymd, historical_time_hhmm)
+                                    current_time_hms = historical_time_hhmm + '00' # Add seconds for filename consistency
+                                    date_input_valid = True
+                                else:
+                                    print("Invalid time format. Please enter HHMM format.")
+                            else:
+                                api_url = selected_feed["url_template"].format(historical_date_ymd)
+                                date_input_valid = True
+                                
+                            if date_input_valid:
+                                current_date_ymd = historical_date_ymd
+                                
+                        except ValueError:
+                            print("Invalid date. Please enter a real date in YYYYMMDD format.")
+                    else:
+                        print("Invalid format. Please enter the date in YYYYMMDD format (e.g., 20231231).")
 
 
-        if needs_decompression:
-            download_filename += ".json.gz"
-            decompressed_source_file_path = download_and_decompress_gz_to_file(api_url, os.environ.get('TOKEN'), download_filename)
+            download_filename = f"{current_date_ymd}"
+            if base_feed_name == "AnonResRT" or base_feed_name == "AnonymousResidentialRT":
+                # The current_time_hms variable is already set for historical RT
+                if current_time_hms:
+                    download_filename += f"{current_time_hms}"
+                else:
+                    current_time_hms = datetime.datetime.now().strftime("%H%M%S")
+                    download_filename += f"{current_time_hms}"
+            
+            # Adjust base_feed_name for consistent filename generation if it's the old 'AnonRes'
+            if base_feed_name == "AnonRes": # Original base name for AnonRes (Latest)
+                download_filename += "AnonymousResidential"
+            elif base_feed_name == "AnonResHist": # Original base name for Anonymous-Residential (Historical)
+                download_filename += "AnonymousResidentialHist"
+            else: # For all other feeds including the new IPv6 ones and AnonResRT
+                download_filename += base_feed_name
+
+
+            if needs_decompression:
+                download_filename += ".json.gz"
+                decompressed_source_file_path = download_and_decompress_gz_to_file(api_url, os.environ.get('TOKEN'), download_filename)
+            else:
+                download_filename += output_ext
+                decompressed_source_file_path = download_raw_file_to_disk(api_url, os.environ.get('TOKEN'), download_filename)
+            
+            if decompressed_source_file_path is None:
+                retry_input = input("Failed to download or decompress the feed. Would you like to try a different feed? (Y/N): ").strip().upper()
+                if retry_input == 'Y':
+                    continue # Restart the loop for feed selection
+                else:
+                    print("Exiting.")
+                    sys.exit(1)
+
         else:
-            download_filename += output_ext
-            decompressed_source_file_path = download_raw_file_to_disk(api_url, os.environ.get('TOKEN'), download_filename)
-        
-        if decompressed_source_file_path is None:
-            print("Failed to download or decompress the feed. Exiting.", file=sys.stderr)
+            print("Invalid response. Please answer 'Y' or 'N'. Exiting.", file=sys.stderr)
             sys.exit(1)
 
-    else:
-        print("Invalid response. Please answer 'Y' or 'N'. Exiting.", file=sys.stderr)
-        sys.exit(1)
-
-    if not decompressed_source_file_path or not os.path.exists(decompressed_source_file_path):
-        print(f"Critical Error: Source data file '{decompressed_source_file_path}' could not be located or created. Exiting.", file=sys.stderr)
-        sys.exit(1)
-    
-    # Check if the feed is JSON and if filtering can proceed
-    if not is_feed_json:
-        print(f"The selected feed '{os.path.basename(decompressed_source_file_path)}' is not a JSON file. No filtering will be performed.")
-        print(f"The downloaded file is located at: {decompressed_source_file_path}")
-        print("Script finished.")
-        script_end_time = time.time()
-        total_elapsed_seconds = script_end_time - script_start_time
-        minutes = int(total_elapsed_seconds // 60)
-        seconds = int(total_elapsed_seconds % 60)
-        print(f"\nTotal script execution time: {minutes} Minutes {seconds} Seconds")
-        sys.exit(0)
-    
-    # Original JSON check (can be simplified if is_feed_json handles all cases)
-    if not decompressed_source_file_path.lower().endswith('.json') and is_feed_json:
-        print(f"Error: The selected feed '{os.path.basename(decompressed_source_file_path)}' is expected to be a JSON file but its extension is not .json.", file=sys.stderr)
-        print("Please ensure you selected a JSON feed or provided an existing JSON file.", file=sys.stderr)
-        sys.exit(1)
-
+        if not decompressed_source_file_path or not os.path.exists(decompressed_source_file_path):
+            print(f"Critical Error: Source data file '{decompressed_source_file_path}' could not be located or created. Exiting.", file=sys.stderr)
+            sys.exit(1)
+        
+        # Check if the feed is JSON and if filtering can proceed
+        if not is_feed_json:
+            print(f"The selected feed '{os.path.basename(decompressed_source_file_path)}' is not a JSON file. No filtering will be performed.")
+            print(f"The downloaded file is located at: {decompressed_source_file_path}")
+            print("Script finished.")
+            script_end_time = time.time()
+            total_elapsed_seconds = script_end_time - script_start_time
+            minutes = int(total_elapsed_seconds // 60)
+            seconds = int(total_elapsed_seconds % 60)
+            print(f"\nTotal script execution time: {minutes} Minutes {seconds} Seconds")
+            sys.exit(0)
+        
+        # Original JSON check (can be simplified if is_feed_json handles all cases)
+        if not decompressed_source_file_path.lower().endswith('.json') and is_feed_json:
+            print(f"Error: The selected feed '{os.path.basename(decompressed_source_file_path)}' is expected to be a JSON file but its extension is not .json.", file=sys.stderr)
+            print("Please ensure you selected a JSON feed or provided an existing JSON file.", file=sys.stderr)
+            sys.exit(1)
+        break # Break the outer while loop if file is successfully handled
 
     filter_criteria = []
     
@@ -511,7 +520,7 @@ if __name__ == "__main__":
                 sample_lines = []
                 try:
                     with open(decompressed_source_file_path, 'r', encoding='utf-8') as f_sample:
-                        for _ in range(500000):
+                        for _ in range(500000): # Sample up to 500,000 lines
                             line = f_sample.readline()
                             if not line: break
                             sample_lines.append(line)
