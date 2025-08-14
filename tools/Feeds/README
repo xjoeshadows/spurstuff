@@ -4,4 +4,4 @@ feedsandqueries.py: Will prompt the user to either download a new feed file or r
 
 spurfeedmultifilter.py: a Spur feed downloader/decompressor with keyword parsing ability. Will output lines matching the keyword(s) to a new file.
 
-![spurmultifilter video](https://github.com/xjoeshadows/spurstuff/blob/main/tools/Feeds/spurmultifilter.webm)
+https://github.com/xjoeshadows/spurstuff/blob/main/tools/Feeds/spurmultifilter.webm
