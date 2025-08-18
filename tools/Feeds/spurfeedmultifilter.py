@@ -49,11 +49,17 @@ def flatten_json(json_data, parent_key='', sep='_'):
             items.append((new_key, v))
     return dict(items)
 
-def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, filter_criteria, overall_match_type):
+def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, user_filename, filter_criteria, overall_match_type):
     """
     Prompts the user for an output filename, offering a default based on filter criteria.
     The format is YYYYMMDD[HHMMSS][inputfilename]Key1Keyword1Key2Keyword2.json
     """
+    if user_filename:
+        sanitized_filename = "".join(x for x in user_filename if x.isalnum() or x in "._-")
+        if not sanitized_filename.lower().endswith(".json"):
+            sanitized_filename += ".json"
+        return sanitized_filename
+
     filename_parts = [current_date_ymd]
     
     # Add timestamp only for AnonResRT and AnonymousResidentialRT feeds
@@ -89,17 +95,7 @@ def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, filt
 
     default_filename = "".join(filename_parts) + ".json"
     
-    prompt_message = f"Enter the desired output file name (e.g., {default_filename}): "
-    user_output_filename = input(prompt_message).strip()
-
-    if not user_output_filename:
-        print(f"No filename provided. Using default: {default_filename}")
-        return default_filename
-    else:
-        sanitized_filename = "".join(x for x in user_output_filename if x.isalnum() or x in "._-")
-        if not sanitized_filename.lower().endswith(".json"):
-            sanitized_filename += ".json"
-        return sanitized_filename
+    return default_filename
 
 def get_file_chunks(filepath, num_chunks):
     """
@@ -391,17 +387,17 @@ if __name__ == "__main__":
             feed_options = {
                 "1": {"name": "Anonymous (Latest)", "url": "https://feeds.spur.us/v2/anonymous/latest.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
                 "2": {"name": "Anonymous IPv6 (Latest)", "url": "https://feeds.spur.us/v2/anonymous-ipv6/latest.json.gz", "base_feed_name": "AnonymousIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-                "3": {"name": "Anonymous (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.json.gz", "base_feed_name": "AnonymousHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                "3": {"name": "Anonymous (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
                 "4": {"name": "Anonymous-Residential (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/latest.json.gz", "base_feed_name": "AnonymousResidential", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
                 "5": {"name": "Anonymous-Residential IPv6 (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential-ipv6/latest.json.gz", "base_feed_name": "AnonymousResidentialIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-                "6": {"name": "Anonymous-Residential (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/{}/feed.json.gz", "base_feed_name": "AnonymousResidentialHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                "6": {"name": "Anonymous-Residential (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/{}/feed.json.gz", "base_feed_name": "AnonymousResidential", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
                 "7": {"name": "Anonymous-Residential Realtime (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/realtime/latest.json.gz", "base_feed_name": "AnonResRT", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True}, # Base name kept as AnonResRT for filename consistency with timestamp
                 "8": {"name": "Anonymous-Residential Realtime (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/{}.json.gz", "base_feed_name": "AnonymousResidentialRT", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
                 "9": {"name": "IPGeo (MMDB - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False, "is_json": False},
                 "10": {"name": "IPGeo (JSON - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.json.gz", "base_feed_name": "IPGeoJSON", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
                 "11": {"name": "Data Center Hosting (DCH) (Latest)", "url": "https://feeds.spur.us/v2/dch/latest.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
                 "12": {"name": "Service Metrics (Latest)", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-                "13": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsAllHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                "13": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
                 "14": {"name": "IPSummary (Latest)", "url": "https://feeds.spur.us/v2/ipsummary/latest.json.gz", "base_feed_name": "IPSummary", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
                 "15": {"name": "Similar IPs (Latest)", "url": "https://feeds.spur.us/v1/similar-ips/latest.json.gz", "base_feed_name": "SimilarIPs", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
             }
@@ -453,44 +449,31 @@ if __name__ == "__main__":
                         print("Invalid format. Please enter the date in YYYYMMDD format (e.g., 20231231).")
             
             download_successful = False
-            if needs_decompression:
-                download_filename = f"{current_date_ymd}"
-                if base_feed_name == "AnonResRT" or base_feed_name == "AnonymousResidentialRT":
-                    if current_time_hms:
-                        download_filename += f"{current_time_hms}"
-                    else:
-                        current_time_hms = datetime.datetime.now().strftime("%H%M%S")
-                        download_filename += f"{current_time_hms}"
-                
-                if base_feed_name == "AnonRes":
-                    download_filename += "AnonymousResidential"
-                elif base_feed_name == "AnonResHist":
-                    download_filename += "AnonymousResidentialHist"
+            download_filename_temp = f"{current_date_ymd}"
+            if base_feed_name == "AnonResRT" or base_feed_name == "AnonymousResidentialRT":
+                if current_time_hms:
+                    download_filename_temp += f"{current_time_hms}"
                 else:
-                    download_filename += base_feed_name
+                    current_time_hms = datetime.datetime.now().strftime("%H%M%S")
+                    download_filename_temp += f"{current_time_hms}"
+            
+            if base_feed_name == "AnonymousResidentialHist":
+                download_filename_temp += "AnonymousResidential"
+            elif base_feed_name == "ServiceMetricsAllHist":
+                download_filename_temp += "ServiceMetricsAll"
+            elif base_feed_name == "AnonymousHist":
+                download_filename_temp += "Anonymous"
+            else:
+                download_filename_temp += base_feed_name
 
-                download_filename += ".json.gz"
-                decompressed_source_file_path = download_and_decompress_gz_to_file(api_url, os.environ.get('TOKEN'), download_filename)
+            if needs_decompression:
+                download_filename_temp += ".json.gz"
+                decompressed_source_file_path = download_and_decompress_gz_to_file(api_url, os.environ.get('TOKEN'), download_filename_temp)
                 if decompressed_source_file_path is not None:
                     download_successful = True
             else:
-                download_filename = f"{current_date_ymd}"
-                if base_feed_name == "AnonResRT" or base_feed_name == "AnonymousResidentialRT":
-                    if current_time_hms:
-                        download_filename += f"{current_time_hms}"
-                    else:
-                        current_time_hms = datetime.datetime.now().strftime("%H%M%S")
-                        download_filename += f"{current_time_hms}"
-
-                if base_feed_name == "AnonRes":
-                    download_filename += "AnonymousResidential"
-                elif base_feed_name == "AnonResHist":
-                    download_filename += "AnonymousResidentialHist"
-                else:
-                    download_filename += base_feed_name
-
-                download_filename += output_ext
-                decompressed_source_file_path = download_raw_file_to_disk(api_url, os.environ.get('TOKEN'), download_filename)
+                download_filename_temp += output_ext
+                decompressed_source_file_path = download_raw_file_to_disk(api_url, os.environ.get('TOKEN'), download_filename_temp)
                 if decompressed_source_file_path is not None:
                     download_successful = True
             
@@ -688,13 +671,14 @@ if __name__ == "__main__":
         perform_filter = 'Y'
 
     # --- Step 3: Get filename for filtered content (JSONL) ---
-    # The get_output_filename function now generates .json files
+    user_output_filename = input(f"Enter the desired output file name (e.g., {get_output_filename(current_date_ymd, current_time_hms, base_feed_name, '', filter_criteria if perform_filter == 'Y' else [], overall_match_type)}): ").strip()
     filtered_output_filename = get_output_filename(
         current_date_ymd, 
-        current_time_hms, # Pass the timestamp
-        base_feed_name,   
+        current_time_hms, 
+        base_feed_name,
+        user_output_filename,   
         filter_criteria if perform_filter == 'Y' else [],
-        overall_match_type # Pass overall match type for filename suggestion
+        overall_match_type
     )
     output_file_path = os.path.join(os.getcwd(), filtered_output_filename)
 
