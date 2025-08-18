@@ -376,6 +376,17 @@ if __name__ == "__main__":
                     is_feed_json = False
 
 
+            if not is_feed_json:
+                print(f"The selected feed '{os.path.basename(provided_file_path)}' is not a JSON file. This script can only filter JSON feeds.", file=sys.stderr)
+                retry_input = input("Would you like to try a different feed? (Y/N): ").strip().upper()
+                if retry_input != 'Y':
+                    print("Exiting.")
+                    sys.exit(1)
+                else:
+                    continue # Restart the loop for feed selection
+            
+            break # Break the outer while loop if file is successfully handled
+
         elif use_existing_file_input == 'N':
             feed_options = {
                 "1": {"name": "Anonymous (Latest)", "url": "https://feeds.spur.us/v2/anonymous/latest.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
@@ -383,7 +394,7 @@ if __name__ == "__main__":
                 "3": {"name": "Anonymous (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.json.gz", "base_feed_name": "AnonymousHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
                 "4": {"name": "Anonymous-Residential (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/latest.json.gz", "base_feed_name": "AnonymousResidential", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
                 "5": {"name": "Anonymous-Residential IPv6 (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential-ipv6/latest.json.gz", "base_feed_name": "AnonymousResidentialIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-                "6": {"name": "Anonymous-Residential (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/0000.json.gz", "base_feed_name": "AnonymousResidentialHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                "6": {"name": "Anonymous-Residential (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/{}/feed.json.gz", "base_feed_name": "AnonymousResidentialHist", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
                 "7": {"name": "Anonymous-Residential Realtime (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/realtime/latest.json.gz", "base_feed_name": "AnonResRT", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True}, # Base name kept as AnonResRT for filename consistency with timestamp
                 "8": {"name": "Anonymous-Residential Realtime (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/{}.json.gz", "base_feed_name": "AnonymousResidentialRT", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
                 "9": {"name": "IPGeo (MMDB - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False, "is_json": False},
@@ -440,34 +451,50 @@ if __name__ == "__main__":
                             print("Invalid date. Please enter a real date in YYYYMMDD format.")
                     else:
                         print("Invalid format. Please enter the date in YYYYMMDD format (e.g., 20231231).")
-
-
-            download_filename = f"{current_date_ymd}"
-            if base_feed_name == "AnonResRT" or base_feed_name == "AnonymousResidentialRT":
-                # The current_time_hms variable is already set for historical RT
-                if current_time_hms:
-                    download_filename += f"{current_time_hms}"
-                else:
-                    current_time_hms = datetime.datetime.now().strftime("%H%M%S")
-                    download_filename += f"{current_time_hms}"
             
-            # Adjust base_feed_name for consistent filename generation if it's the old 'AnonRes'
-            if base_feed_name == "AnonRes": # Original base name for AnonRes (Latest)
-                download_filename += "AnonymousResidential"
-            elif base_feed_name == "AnonResHist": # Original base name for Anonymous-Residential (Historical)
-                download_filename += "AnonymousResidentialHist"
-            else: # For all other feeds including the new IPv6 ones and AnonResRT
-                download_filename += base_feed_name
-
-
+            download_successful = False
             if needs_decompression:
+                download_filename = f"{current_date_ymd}"
+                if base_feed_name == "AnonResRT" or base_feed_name == "AnonymousResidentialRT":
+                    if current_time_hms:
+                        download_filename += f"{current_time_hms}"
+                    else:
+                        current_time_hms = datetime.datetime.now().strftime("%H%M%S")
+                        download_filename += f"{current_time_hms}"
+                
+                if base_feed_name == "AnonRes":
+                    download_filename += "AnonymousResidential"
+                elif base_feed_name == "AnonResHist":
+                    download_filename += "AnonymousResidentialHist"
+                else:
+                    download_filename += base_feed_name
+
                 download_filename += ".json.gz"
                 decompressed_source_file_path = download_and_decompress_gz_to_file(api_url, os.environ.get('TOKEN'), download_filename)
+                if decompressed_source_file_path is not None:
+                    download_successful = True
             else:
+                download_filename = f"{current_date_ymd}"
+                if base_feed_name == "AnonResRT" or base_feed_name == "AnonymousResidentialRT":
+                    if current_time_hms:
+                        download_filename += f"{current_time_hms}"
+                    else:
+                        current_time_hms = datetime.datetime.now().strftime("%H%M%S")
+                        download_filename += f"{current_time_hms}"
+
+                if base_feed_name == "AnonRes":
+                    download_filename += "AnonymousResidential"
+                elif base_feed_name == "AnonResHist":
+                    download_filename += "AnonymousResidentialHist"
+                else:
+                    download_filename += base_feed_name
+
                 download_filename += output_ext
                 decompressed_source_file_path = download_raw_file_to_disk(api_url, os.environ.get('TOKEN'), download_filename)
+                if decompressed_source_file_path is not None:
+                    download_successful = True
             
-            if decompressed_source_file_path is None:
+            if not download_successful:
                 retry_input = input("Failed to download or decompress the feed. Would you like to try a different feed? (Y/N): ").strip().upper()
                 if retry_input == 'Y':
                     continue # Restart the loop for feed selection
@@ -475,32 +502,32 @@ if __name__ == "__main__":
                     print("Exiting.")
                     sys.exit(1)
 
+            if not is_feed_json:
+                print(f"The selected feed '{os.path.basename(decompressed_source_file_path)}' is not a JSON file. No filtering will be performed.")
+                print(f"The downloaded file is located at: {decompressed_source_file_path}")
+                print("Script finished.")
+                script_end_time = time.time()
+                total_elapsed_seconds = script_end_time - script_start_time
+                minutes = int(total_elapsed_seconds // 60)
+                seconds = int(total_elapsed_seconds % 60)
+                print(f"\nTotal script execution time: {minutes} Minutes {seconds} Seconds")
+                sys.exit(0)
+            
+            break # Break the outer while loop if file is successfully downloaded and is a JSON feed
         else:
             print("Invalid response. Please answer 'Y' or 'N'. Exiting.", file=sys.stderr)
             sys.exit(1)
 
-        if not decompressed_source_file_path or not os.path.exists(decompressed_source_file_path):
-            print(f"Critical Error: Source data file '{decompressed_source_file_path}' could not be located or created. Exiting.", file=sys.stderr)
-            sys.exit(1)
-        
-        # Check if the feed is JSON and if filtering can proceed
-        if not is_feed_json:
-            print(f"The selected feed '{os.path.basename(decompressed_source_file_path)}' is not a JSON file. No filtering will be performed.")
-            print(f"The downloaded file is located at: {decompressed_source_file_path}")
-            print("Script finished.")
-            script_end_time = time.time()
-            total_elapsed_seconds = script_end_time - script_start_time
-            minutes = int(total_elapsed_seconds // 60)
-            seconds = int(total_elapsed_seconds % 60)
-            print(f"\nTotal script execution time: {minutes} Minutes {seconds} Seconds")
-            sys.exit(0)
-        
-        # Original JSON check (can be simplified if is_feed_json handles all cases)
-        if not decompressed_source_file_path.lower().endswith('.json') and is_feed_json:
-            print(f"Error: The selected feed '{os.path.basename(decompressed_source_file_path)}' is expected to be a JSON file but its extension is not .json.", file=sys.stderr)
-            print("Please ensure you selected a JSON feed or provided an existing JSON file.", file=sys.stderr)
-            sys.exit(1)
-        break # Break the outer while loop if file is successfully handled
+    if not decompressed_source_file_path or not os.path.exists(decompressed_source_file_path):
+        print(f"Critical Error: Source data file '{decompressed_source_file_path}' could not be located or created. Exiting.", file=sys.stderr)
+        sys.exit(1)
+    
+    # Original JSON check (can be simplified if is_feed_json handles all cases)
+    if not decompressed_source_file_path.lower().endswith('.json') and is_feed_json:
+        print(f"Error: The selected feed '{os.path.basename(decompressed_source_file_path)}' is expected to be a JSON file but its extension is not .json.", file=sys.stderr)
+        print("Please ensure you selected a JSON feed or provided an existing JSON file.", file=sys.stderr)
+        sys.exit(1)
+
 
     filter_criteria = []
     
