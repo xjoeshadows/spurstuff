@@ -1,18 +1,26 @@
 A collection of tools to interact with the Context API. Substitute your own token for the placeholder in the scripts.
 
-easyenrichment.py: An easy way to do context api enrichment. Accepts a filename of IPs (comma, newline, or space separated) as an argument as well as pasting into the terminal.
+### easyenrichment.py: 
+An easy way to do context api enrichment. Accepts a filename of IPs (comma, newline, or space separated) as an argument as well as pasting into the terminal.
 
-contextAPIEnrich-FlexibleCSV-JSONL.py: Enriches a CSV with variable columns to JSONL, variable workers for parallel requests, outputs to JSONL.
+### contextAPIEnrich-FlexibleCSV-JSONL.py:
+Enriches a CSV with variable columns to JSONL, variable workers for parallel requests, outputs to JSONL.
 
-Archived:
+### IPs+Timestamps.csv: 
+Sample CSV file
 
-contextAPI-IPEnrichToJSON.py: Enriches a list of IPs in a txt file, variable workers for parallel requests, outputs to JSONL.
+### Archived:
 
-contextAPIEnrich-IPs-Timestamps-CSV.py: Enriches a list of IPs and Timestamps in a CSV, outputs to CSV.
+### contextAPI-IPEnrichToJSON.py: 
+Enriches a list of IPs in a txt file, variable workers for parallel requests, outputs to JSONL.
 
-contextAPIEnrich-IPs-Timestamps-JSONL.py: Enriches a list of IPs and Timestamps in a CSV, outputs to JSONL
+### contextAPIEnrich-IPs-Timestamps-CSV.py: 
+Enriches a list of IPs and Timestamps in a CSV, outputs to CSV.
 
-IPs+Timestamps.csv: Sample CSV file
+### contextAPIEnrich-IPs-Timestamps-JSONL.py: 
+Enriches a list of IPs and Timestamps in a CSV, outputs to JSONL
+
+
 
 
 
