@@ -1,3 +1,5 @@
+## A collection of tools to interact with Spur's Feeds. Substitute your own token variable for the placeholder in the scripts.
+
 - ### dailyfeedcounts.py: 
   - Will grab the line count of each of the feeds, report them to the user, and export to a YYYYMMDDDailyFeedCount.txt file. Handy for adding to your .zshrc file and for doing date over date comparisons of growth of the feeds.
 
