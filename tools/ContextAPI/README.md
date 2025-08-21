@@ -3,7 +3,7 @@
 - ### easyenrichment.py: 
   - An easy way to do context api enrichment. Accepts a filename of IPs (comma, newline, or space separated) as an argument as well as pasting into the terminal.
 
-- ### contextAPIEnrich-FlexibleCSV-JSONL.py:
+- ### contextAPIFlexibleFileEnrichment.py:
   - Enriches a CSV with variable columns to JSONL, variable workers for parallel requests, outputs to JSONL.
 
 - ### IPs+Timestamps.csv:
