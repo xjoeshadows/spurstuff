@@ -18,11 +18,11 @@ api_url_base = "https://api.spur.us/v2/context/"
 MAX_WORKERS = 500
 
 # API request timeout in seconds. Crucial for preventing indefinite hangs.
-REQUEST_TIMEOUT = 10 # Increased to 10 seconds from 2 seconds
+REQUEST_TIMEOUT = 10
 
 # Retry strategy for transient network errors and potential soft rate limits
 RETRY_STRATEGY = Retry(
-    total=8, # Increased total retries from 5 to 8
+    total=8,
     backoff_factor=2,
     status_forcelist=[429, 500, 502, 503, 504],
     allowed_methods=["GET"]
@@ -115,34 +115,64 @@ def read_ip_timestamp_and_all_data(input_file_path):
         else:
             raise ValueError("Unsupported file format. Please use CSV or XLSX.")
 
+        # Normalize column names to lowercase for case-insensitive checking and access
         df.columns = df.columns.str.lower()
+        
+        ip_col = None
+        ts_col = None
 
-        if not all(col in df.columns for col in ['ip', 'timestamp']):
-            raise ValueError("Input file must contain columns named 'ip' and 'timestamp' (case-insensitive).")
+        # Find the columns based on more specific terms
+        for col in df.columns:
+            if ('ip address' in col or '_ip_' in col) and ip_col is None:
+                ip_col = col
+            if 'timestamp' in col and ts_col is None:
+                ts_col = col
+        
+        # Fallback to a simple 'ip' check if no specific match is found, just in case
+        if ip_col is None:
+            for col in df.columns:
+                if 'ip' in col:
+                    ip_col = col
+                    break
+        
+        # Check if required columns were found
+        if ip_col is None or ts_col is None:
+            raise ValueError("Input file must contain a column for IP (e.g., 'ip address', '_ip_') and a column for 'timestamp'.")
 
         all_rows_data = []
         for index, row in df.iterrows():
             row_dict = row.to_dict()
-
-            if 'ip' in row_dict and 'IP' not in row_dict:
-                row_dict['IP'] = row_dict.pop('ip')
-            if 'timestamp' in row_dict and 'Timestamp' not in row_dict:
-                row_dict['Timestamp'] = row_dict.pop('timestamp')
-
+            
+            # Map the identified columns to the standardized keys
+            # and remove the original key to prevent the original Timestamp object from persisting
+            row_dict['IP'] = row_dict.pop(ip_col)
+            row_dict['Timestamp'] = row_dict.pop(ts_col)
+            
+            # Process timestamp to YYYYMMDD format
             timestamp_str = str(row_dict.get('Timestamp')) if pd.notna(row_dict.get('Timestamp')) else None
             formatted_timestamp = None
             if timestamp_str and timestamp_str.lower() != 'nan':
                 try:
-                    dt_obj = datetime.fromisoformat(timestamp_str)
+                    dt_obj = datetime.strptime(timestamp_str, '%m/%d/%Y %H:%M')
                     formatted_timestamp = dt_obj.strftime('%Y%m%d')
                 except ValueError:
                     try:
-                        datetime.strptime(timestamp_str, '%Y%m%d')
-                        formatted_timestamp = timestamp_str
+                        dt_obj = datetime.fromisoformat(timestamp_str)
+                        formatted_timestamp = dt_obj.strftime('%Y%m%d')
                     except ValueError:
-                        formatted_timestamp = None
+                        try:
+                            datetime.strptime(timestamp_str, '%Y%m%d')
+                            formatted_timestamp = timestamp_str
+                        except ValueError:
+                            formatted_timestamp = None
             
             row_dict['Timestamp'] = formatted_timestamp
+
+            # Clean up any other unexpected Timestamp objects that might be present
+            for key, value in row_dict.items():
+                if isinstance(value, pd.Timestamp):
+                    row_dict[key] = str(value)
+
             all_rows_data.append(row_dict)
         return all_rows_data
 
@@ -210,7 +240,6 @@ if __name__ == "__main__":
 
     print("All enrichment tasks completed and results written to file.")
 
-    # Record the end time and calculate total runtime
     end_main_time = time.time()
     total_runtime = end_main_time - start_main_time
     print(f"Total script runtime: {time.strftime('%H:%M:%S', time.gmtime(total_runtime))}")
