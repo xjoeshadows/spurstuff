@@ -85,17 +85,28 @@ def write_to_json_stream(results_iterator, output_path):
     """
     processed_count = 0
     start_time = time.time()
+    last_update_time = start_time
     try:
         print(f"Writing enriched records to {output_path} (JSON Lines format)...")
-        with open(output_path, 'w', encoding='utf-8') as outfile:
-            for result in results_iterator:
-                if result:
+        for result in results_iterator:
+            if result:
+                # Get a new start time for the write if a new result is found
+                if processed_count == 0:
+                  start_time = time.time()
+                  last_update_time = start_time
+
+                with open(output_path, 'a', encoding='utf-8') as outfile:
                     outfile.write(json.dumps(result, ensure_ascii=False) + '\n')
-                    processed_count += 1
-                    if processed_count % 1000 == 0:
-                        elapsed_time = time.time() - start_time
-                        records_per_second = processed_count / elapsed_time if elapsed_time > 0 else 0
-                        print(f"  Written {processed_count} records ({records_per_second:.2f} records/s) - {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))} elapsed")
+                processed_count += 1
+                
+            current_time = time.time()
+            # Print a status update every 5 seconds
+            if current_time - last_update_time >= 5:
+                elapsed_time = current_time - start_time
+                records_per_second = processed_count / elapsed_time if elapsed_time > 0 else 0
+                print(f"  Processed {processed_count} records ({records_per_second:.2f} records/s) - {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))} elapsed")
+                last_update_time = current_time
+
         print(f"Successfully wrote {processed_count} enriched records to {output_path}")
     except Exception as e:
         print(f"Error writing to JSON Lines file: {e}", file=sys.stderr)
@@ -144,7 +155,6 @@ def read_ip_timestamp_and_all_data(input_file_path):
             row_dict = row.to_dict()
             
             # Map the identified columns to the standardized keys
-            # and remove the original key to prevent the original Timestamp object from persisting
             row_dict['IP'] = row_dict.pop(ip_col)
             row_dict['Timestamp'] = row_dict.pop(ts_col)
             
@@ -185,21 +195,40 @@ if __name__ == "__main__":
     # Record the start time of the entire script
     start_main_time = time.time()
 
+    # --- Token Check and Prompt ---
     api_token = os.environ.get("TOKEN")
     if not api_token:
-        print("Error: TOKEN environment variable not set.", file=sys.stderr)
-        print("Please set it using: export TOKEN='YOUR_API_TOKEN'", file=sys.stderr)
-        sys.exit(1)
-
-    if len(sys.argv) != 2:
-        print("Usage: python enrich_ip_api.py <input_file>", file=sys.stderr)
-        sys.exit(1)
-
-    input_file_path = sys.argv[1]
-
-    if not os.path.exists(input_file_path):
-        print(f"Error: Input file not found at {input_file_path}", file=sys.stderr)
-        sys.exit(1)
+        print("Error: TOKEN environment variable not set.")
+        api_token = input("Please enter your Spur API token: ").strip()
+        if not api_token:
+            print("No API token provided. Exiting.", file=sys.stderr)
+            sys.exit(1)
+        os.environ['TOKEN'] = api_token
+    
+    # --- Input File Check and Prompt ---
+    input_file_path = None
+    
+    # 1. Check if a file path was provided as a command-line argument
+    if len(sys.argv) == 2:
+        input_file_path = sys.argv[1]
+    
+    # 2. If no file path was provided (or the token was just entered), prompt the user
+    if input_file_path is None:
+        print("\n--- Input File Required ---")
+        while True:
+            file_input = input("Enter the path to your CSV or XLSX file: ").strip()
+            if not file_input:
+                print("File path cannot be empty. Please try again.")
+                continue
+            
+            if not os.path.exists(file_input):
+                print(f"Error: Input file not found at {file_input}. Please check the path and try again.")
+                continue
+            
+            input_file_path = file_input
+            break
+    
+    # The rest of the script proceeds with the validated input_file_path
 
     output_dir = os.path.dirname(input_file_path)
     input_file_basename = os.path.basename(input_file_path)
@@ -233,6 +262,11 @@ if __name__ == "__main__":
         sys.exit(0)
 
     print(f"Starting enrichment for {len(valid_records_for_enrichment)} valid records in parallel...")
+
+    # Clear the output file before starting a new run
+    if os.path.exists(output_file_path):
+        with open(output_file_path, 'w') as f:
+            f.truncate(0)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         results_iterator = executor.map(lambda row: enrich_ip(row, api_token), valid_records_for_enrichment)
