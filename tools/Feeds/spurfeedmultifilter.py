@@ -51,7 +51,7 @@ def flatten_json(json_data, parent_key='', sep='_'):
 
 def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, user_filename, filter_criteria, overall_match_type):
     """
-    Prompts the user for an output filename, offering a default based on filter criteria.
+    Determines the output filename. If the user provided one, it's used. Otherwise, a default is generated.
     The format is YYYYMMDD[HHMMSS][inputfilename]Key1Keyword1Key2Keyword2.json
     """
     if user_filename:
@@ -66,6 +66,10 @@ def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, user
     if (base_feed_name == "AnonResRT" or base_feed_name == "AnonymousResidentialRT") and current_time_hms:
         filename_parts.append(current_time_hms)
         
+    # Remove 'Hist' from default historical feed filenames for cleaner names
+    if base_feed_name.endswith('Hist'):
+        base_feed_name = base_feed_name[:-4]
+
     filename_parts.append(base_feed_name)
 
     if filter_criteria: # Only append filter parts if filtering is active
@@ -321,8 +325,10 @@ if __name__ == "__main__":
     script_start_time = time.time()
 
     if os.environ.get('TOKEN') is None:
-        print("Error: TOKEN environment variable not set. Please set it to your Spur API token.", file=sys.stderr)
-        sys.exit(1)
+        user_token = input("No TOKEN environment variable found. Please enter your Spur API token: ").strip()
+        os.environ['TOKEN'] = user_token
+        # Update the global API_TOKEN variable
+        API_TOKEN = user_token
 
     while True:
         current_date_ymd = datetime.date.today().strftime("%Y%m%d")
