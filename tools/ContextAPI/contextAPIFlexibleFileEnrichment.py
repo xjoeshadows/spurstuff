@@ -88,19 +88,22 @@ def write_to_json_stream(results_iterator, output_path):
     last_update_time = start_time
     try:
         print(f"Writing enriched records to {output_path} (JSON Lines format)...")
+        # Ensure the file is empty before we start appending
+        if os.path.exists(output_path):
+            with open(output_path, 'w') as f:
+                f.truncate(0)
+        
         for result in results_iterator:
             if result:
-                # Get a new start time for the write if a new result is found
                 if processed_count == 0:
-                  start_time = time.time()
-                  last_update_time = start_time
+                    start_time = time.time()
+                    last_update_time = start_time
 
                 with open(output_path, 'a', encoding='utf-8') as outfile:
                     outfile.write(json.dumps(result, ensure_ascii=False) + '\n')
                 processed_count += 1
                 
             current_time = time.time()
-            # Print a status update every 5 seconds
             if current_time - last_update_time >= 5:
                 elapsed_time = current_time - start_time
                 records_per_second = processed_count / elapsed_time if elapsed_time > 0 else 0
@@ -126,29 +129,21 @@ def read_ip_timestamp_and_all_data(input_file_path):
         else:
             raise ValueError("Unsupported file format. Please use CSV or XLSX.")
 
-        # Normalize column names to lowercase for case-insensitive checking and access
-        df.columns = df.columns.str.lower()
+        # Normalize column names by converting to lowercase and stripping whitespace
+        df.columns = df.columns.str.lower().str.strip()
         
         ip_col = None
         ts_col = None
 
-        # Find the columns based on more specific terms
+        # Find the columns based on a comprehensive set of terms
         for col in df.columns:
-            if ('ip address' in col or '_ip_' in col) and ip_col is None:
+            if ('ip address' in col or 'ips' in col or 'ip' in col) and ip_col is None:
                 ip_col = col
             if 'timestamp' in col and ts_col is None:
                 ts_col = col
-        
-        # Fallback to a simple 'ip' check if no specific match is found, just in case
-        if ip_col is None:
-            for col in df.columns:
-                if 'ip' in col:
-                    ip_col = col
-                    break
-        
-        # Check if required columns were found
+
         if ip_col is None or ts_col is None:
-            raise ValueError("Input file must contain a column for IP (e.g., 'ip address', '_ip_') and a column for 'timestamp'.")
+            raise ValueError("Input file must contain a column for IP (e.g., 'ip address', 'ips') and a column for 'timestamp'.")
 
         all_rows_data = []
         for index, row in df.iterrows():
@@ -167,7 +162,11 @@ def read_ip_timestamp_and_all_data(input_file_path):
                     formatted_timestamp = dt_obj.strftime('%Y%m%d')
                 except ValueError:
                     try:
-                        dt_obj = datetime.fromisoformat(timestamp_str)
+                        # Handle ISO 8601 format with or without 'Z'
+                        if timestamp_str.endswith('Z'):
+                            dt_obj = datetime.fromisoformat(timestamp_str.replace('Z', ''))
+                        else:
+                            dt_obj = datetime.fromisoformat(timestamp_str)
                         formatted_timestamp = dt_obj.strftime('%Y%m%d')
                     except ValueError:
                         try:
@@ -262,11 +261,6 @@ if __name__ == "__main__":
         sys.exit(0)
 
     print(f"Starting enrichment for {len(valid_records_for_enrichment)} valid records in parallel...")
-
-    # Clear the output file before starting a new run
-    if os.path.exists(output_file_path):
-        with open(output_file_path, 'w') as f:
-            f.truncate(0)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         results_iterator = executor.map(lambda row: enrich_ip(row, api_token), valid_records_for_enrichment)
