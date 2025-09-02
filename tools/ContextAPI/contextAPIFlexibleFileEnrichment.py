@@ -110,22 +110,24 @@ def write_to_json_stream(results_iterator, output_path, total_processed_count_re
 def find_and_map_columns(df):
     """
     Finds and maps the IP and Timestamp columns from a DataFrame.
+    Returns the original column names.
     """
-    normalized_columns = df.columns.str.lower().str.strip()
+    original_columns = df.columns
+    normalized_columns = original_columns.str.lower().str.strip()
     
-    ip_col = None
-    ts_col = None
+    ip_col_original = None
+    ts_col_original = None
 
-    for col in normalized_columns:
-        if ('ip address' in col or 'ips' in col or 'ip' in col) and ip_col is None:
-            ip_col = col
-        if 'timestamp' in col and ts_col is None:
-            ts_col = col
+    for i, col in enumerate(normalized_columns):
+        if ('ip address' in col or 'ips' in col or 'ip' in col) and ip_col_original is None:
+            ip_col_original = original_columns[i]
+        if 'timestamp' in col and ts_col_original is None:
+            ts_col_original = original_columns[i]
 
-    if ip_col is None or ts_col is None:
+    if ip_col_original is None or ts_col_original is None:
         raise ValueError("Input file must contain a column for IP (e.g., 'ip address', 'ips') and a column for 'timestamp'.")
     
-    return ip_col, ts_col
+    return ip_col_original, ts_col_original
 
 
 def process_chunk(df_chunk, ip_col, ts_col):
@@ -136,7 +138,7 @@ def process_chunk(df_chunk, ip_col, ts_col):
     for index, row in df_chunk.iterrows():
         row_dict = row.to_dict()
         
-        # Map the identified columns to the standardized keys
+        # Use the original column names to access and pop the data
         row_dict['IP'] = row_dict.pop(ip_col)
         row_dict['Timestamp'] = row_dict.pop(ts_col)
         
@@ -238,24 +240,27 @@ if __name__ == "__main__":
         sys.exit(1)
         
     # Process the file in chunks
-    first_chunk = True
     ip_col, ts_col = None, None
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         for chunk in reader:
-            if first_chunk:
+            if ip_col is None:
                 ip_col, ts_col = find_and_map_columns(chunk)
-                first_chunk = False
             
-            # Count the number of IP records in the chunk
             total_ips += len(chunk)
 
-            # Process the chunk and get a list of dictionaries
             chunk_data = process_chunk(chunk, ip_col, ts_col)
 
-            # Submit tasks to the executor
-            results_iterator = executor.map(lambda row: enrich_ip(row, api_token), chunk_data)
+            valid_records_for_enrichment = [
+                row for row in chunk_data 
+                if row.get('IP') and str(row['IP']).lower() != 'nan'
+            ]
+            
+            if not valid_records_for_enrichment:
+                print(f"No valid IP addresses found in chunk. Skipping chunk of size {len(chunk)}.", file=sys.stderr)
+                continue
 
-            # Stream the results to the file
+            results_iterator = executor.map(lambda row: enrich_ip(row, api_token), valid_records_for_enrichment)
+
             write_to_json_stream(results_iterator, output_file_path, total_processed_count, start_main_time)
             
     print("All enrichment tasks completed and results written to file.")
