@@ -11,7 +11,7 @@
 
 ## Archived:
 - ### contextAPI-IPEnrichToJSON.py:
-  - Enriches a list of IPs in a txt file, variable workers for parallel requests, outputs to JSONL.
+  - Enriches a list of IPs in a txt file, variable workers for parallel requests, outputs to JSONL. This script expects a column for IPs and a column for Timestamps which requires Context API Historical lookups.
 
 - ### contextAPIEnrich-IPs-Timestamps-CSV.py:
     - Enriches a list of IPs and Timestamps in a CSV, outputs to CSV.
