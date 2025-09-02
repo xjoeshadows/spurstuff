@@ -15,7 +15,10 @@ api_url_base = "https://api.spur.us/v2/context/"
 
 # Set the maximum number of concurrent workers (threads) for API calls
 # Be mindful of API rate limits when setting this value.
-MAX_WORKERS = 500
+MAX_WORKERS = 32 # Set to a more conservative number for stability
+
+# Chunk size for reading large files to prevent memory issues
+CHUNK_SIZE = 10000
 
 # API request timeout in seconds. Crucial for preventing indefinite hangs.
 REQUEST_TIMEOUT = 10
@@ -78,123 +81,102 @@ def enrich_ip(row_data, api_token):
         print(f"Error enriching {ip_address} (timestamp={timestamp}): {e}", file=sys.stderr)
         return None
 
-def write_to_json_stream(results_iterator, output_path):
+def write_to_json_stream(results_iterator, output_path, total_processed_count_ref, start_time):
     """
     Writes a stream of JSON objects to a JSON Lines file.
     Each JSON object is written on a new line.
     """
-    processed_count = 0
-    start_time = time.time()
-    last_update_time = start_time
+    last_update_time = time.time()
     try:
-        print(f"Writing enriched records to {output_path} (JSON Lines format)...")
-        # Ensure the file is empty before we start appending
-        if os.path.exists(output_path):
-            with open(output_path, 'w') as f:
-                f.truncate(0)
-        
-        for result in results_iterator:
-            if result:
-                if processed_count == 0:
-                    start_time = time.time()
-                    last_update_time = start_time
-
-                with open(output_path, 'a', encoding='utf-8') as outfile:
+        # Open the file in append mode. It's handled in main to be truncated on the first run.
+        with open(output_path, 'a', encoding='utf-8') as outfile:
+            for result in results_iterator:
+                if result:
                     outfile.write(json.dumps(result, ensure_ascii=False) + '\n')
-                processed_count += 1
+                    total_processed_count_ref[0] += 1
                 
-            current_time = time.time()
-            if current_time - last_update_time >= 5:
-                elapsed_time = current_time - start_time
-                records_per_second = processed_count / elapsed_time if elapsed_time > 0 else 0
-                print(f"  Processed {processed_count} records ({records_per_second:.2f} records/s) - {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))} elapsed")
-                last_update_time = current_time
+                current_time = time.time()
+                if current_time - last_update_time >= 5:
+                    elapsed_time = current_time - start_time
+                    records_per_second = total_processed_count_ref[0] / elapsed_time if elapsed_time > 0 else 0
+                    print(f"  Processed {total_processed_count_ref[0]} records ({records_per_second:.2f} records/s) - {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))} elapsed")
+                    last_update_time = current_time
 
-        print(f"Successfully wrote {processed_count} enriched records to {output_path}")
     except Exception as e:
         print(f"Error writing to JSON Lines file: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-def read_ip_timestamp_and_all_data(input_file_path):
+def find_and_map_columns(df):
     """
-    Reads all data from a CSV or XLSX file, processes the 'Timestamp' column,
-    and returns a list of dictionaries, where each dict is a row.
+    Finds and maps the IP and Timestamp columns from a DataFrame.
     """
-    try:
-        if input_file_path.lower().endswith('.csv'):
-            df = pd.read_csv(input_file_path)
-        elif input_file_path.lower().endswith(('.xls', '.xlsx')):
-            df = pd.read_excel(input_file_path)
-        else:
-            raise ValueError("Unsupported file format. Please use CSV or XLSX.")
+    normalized_columns = df.columns.str.lower().str.strip()
+    
+    ip_col = None
+    ts_col = None
 
-        # Normalize column names by converting to lowercase and stripping whitespace
-        df.columns = df.columns.str.lower().str.strip()
+    for col in normalized_columns:
+        if ('ip address' in col or 'ips' in col or 'ip' in col) and ip_col is None:
+            ip_col = col
+        if 'timestamp' in col and ts_col is None:
+            ts_col = col
+
+    if ip_col is None or ts_col is None:
+        raise ValueError("Input file must contain a column for IP (e.g., 'ip address', 'ips') and a column for 'timestamp'.")
+    
+    return ip_col, ts_col
+
+
+def process_chunk(df_chunk, ip_col, ts_col):
+    """
+    Processes a single pandas DataFrame chunk.
+    """
+    all_rows_data = []
+    for index, row in df_chunk.iterrows():
+        row_dict = row.to_dict()
         
-        ip_col = None
-        ts_col = None
-
-        # Find the columns based on a comprehensive set of terms
-        for col in df.columns:
-            if ('ip address' in col or 'ips' in col or 'ip' in col) and ip_col is None:
-                ip_col = col
-            if 'timestamp' in col and ts_col is None:
-                ts_col = col
-
-        if ip_col is None or ts_col is None:
-            raise ValueError("Input file must contain a column for IP (e.g., 'ip address', 'ips') and a column for 'timestamp'.")
-
-        all_rows_data = []
-        for index, row in df.iterrows():
-            row_dict = row.to_dict()
-            
-            # Map the identified columns to the standardized keys
-            row_dict['IP'] = row_dict.pop(ip_col)
-            row_dict['Timestamp'] = row_dict.pop(ts_col)
-            
-            # Process timestamp to YYYYMMDD format
-            timestamp_str = str(row_dict.get('Timestamp')) if pd.notna(row_dict.get('Timestamp')) else None
-            formatted_timestamp = None
-            if timestamp_str and timestamp_str.lower() != 'nan':
+        # Map the identified columns to the standardized keys
+        row_dict['IP'] = row_dict.pop(ip_col)
+        row_dict['Timestamp'] = row_dict.pop(ts_col)
+        
+        # Process timestamp to YYYYMMDD format
+        timestamp_str = str(row_dict.get('Timestamp')) if pd.notna(row_dict.get('Timestamp')) else None
+        formatted_timestamp = None
+        if timestamp_str and timestamp_str.lower() != 'nan':
+            try:
+                dt_obj = datetime.strptime(timestamp_str, '%m/%d/%Y %H:%M')
+                formatted_timestamp = dt_obj.strftime('%Y%m%d')
+            except ValueError:
                 try:
-                    dt_obj = datetime.strptime(timestamp_str, '%m/%d/%Y %H:%M')
+                    # Handle ISO 8601 format with or without 'Z'
+                    if timestamp_str.endswith('Z'):
+                        dt_obj = datetime.fromisoformat(timestamp_str.replace('Z', ''))
+                    else:
+                        dt_obj = datetime.fromisoformat(timestamp_str)
                     formatted_timestamp = dt_obj.strftime('%Y%m%d')
                 except ValueError:
                     try:
-                        # Handle ISO 8601 format with or without 'Z'
-                        if timestamp_str.endswith('Z'):
-                            dt_obj = datetime.fromisoformat(timestamp_str.replace('Z', ''))
-                        else:
-                            dt_obj = datetime.fromisoformat(timestamp_str)
-                        formatted_timestamp = dt_obj.strftime('%Y%m%d')
+                        datetime.strptime(timestamp_str, '%Y%m%d')
+                        formatted_timestamp = timestamp_str
                     except ValueError:
-                        try:
-                            datetime.strptime(timestamp_str, '%Y%m%d')
-                            formatted_timestamp = timestamp_str
-                        except ValueError:
-                            formatted_timestamp = None
-            
-            row_dict['Timestamp'] = formatted_timestamp
+                        formatted_timestamp = None
+        
+        row_dict['Timestamp'] = formatted_timestamp
 
-            # Clean up any other unexpected Timestamp objects that might be present
-            for key, value in row_dict.items():
-                if isinstance(value, pd.Timestamp):
-                    row_dict[key] = str(value)
+        # Clean up any other unexpected Timestamp objects that might be present
+        for key, value in row_dict.items():
+            if isinstance(value, pd.Timestamp):
+                row_dict[key] = str(value)
 
-            all_rows_data.append(row_dict)
-        return all_rows_data
+        all_rows_data.append(row_dict)
+    return all_rows_data
 
-    except Exception as e:
-        print(f"Error reading input file: {e}", file=sys.stderr)
-        sys.exit(1)
 
 # --- Main Script ---
 if __name__ == "__main__":
-    # Record the start time of the entire script
     start_main_time = time.time()
 
-    # --- Token Check and Prompt ---
     api_token = os.environ.get("TOKEN")
     if not api_token:
         print("Error: TOKEN environment variable not set.")
@@ -204,14 +186,10 @@ if __name__ == "__main__":
             sys.exit(1)
         os.environ['TOKEN'] = api_token
     
-    # --- Input File Check and Prompt ---
     input_file_path = None
-    
-    # 1. Check if a file path was provided as a command-line argument
     if len(sys.argv) == 2:
         input_file_path = sys.argv[1]
     
-    # 2. If no file path was provided (or the token was just entered), prompt the user
     if input_file_path is None:
         print("\n--- Input File Required ---")
         while True:
@@ -219,20 +197,15 @@ if __name__ == "__main__":
             if not file_input:
                 print("File path cannot be empty. Please try again.")
                 continue
-            
             if not os.path.exists(file_input):
                 print(f"Error: Input file not found at {file_input}. Please check the path and try again.")
                 continue
-            
             input_file_path = file_input
             break
-    
-    # The rest of the script proceeds with the validated input_file_path
 
     output_dir = os.path.dirname(input_file_path)
     input_file_basename = os.path.basename(input_file_path)
     input_file_name_without_ext = os.path.splitext(input_file_basename)[0]
-
     default_output_file_name = f"{input_file_name_without_ext}_SpurEnrichment.json"
 
     output_file_name_input = input(f"Enter the desired output file name (e.g., ip_data_enriched.json), or press Enter for default ({default_output_file_name}): ").strip()
@@ -246,27 +219,47 @@ if __name__ == "__main__":
             output_file_name_input += ".json"
         output_file_path = os.path.join(output_dir, output_file_name_input)
 
-    print(f"Reading data from {input_file_path}...")
-    all_input_rows = read_ip_timestamp_and_all_data(input_file_path)
-    total_ips = len(all_input_rows)
-    print(f"Read {total_ips} records for enrichment.")
+    # Truncate the output file at the start of a new run
+    if os.path.exists(output_file_path):
+        with open(output_file_path, 'w') as f:
+            f.truncate(0)
 
-    valid_records_for_enrichment = [
-        row for row in all_input_rows 
-        if row.get('IP') and str(row['IP']).lower() != 'nan'
-    ]
-    
-    if not valid_records_for_enrichment:
-        print("No valid IP addresses found for enrichment. Exiting.", file=sys.stderr)
-        sys.exit(0)
+    print(f"Reading data from {input_file_path} in chunks of {CHUNK_SIZE}...")
+    total_ips = 0
+    total_processed_count = [0] # Use a list to pass by reference
 
-    print(f"Starting enrichment for {len(valid_records_for_enrichment)} valid records in parallel...")
-
+    # Set up the appropriate pandas reader for chunking
+    if input_file_path.lower().endswith('.csv'):
+        reader = pd.read_csv(input_file_path, chunksize=CHUNK_SIZE)
+    elif input_file_path.lower().endswith(('.xls', '.xlsx')):
+        reader = pd.read_excel(input_file_path, chunksize=CHUNK_SIZE)
+    else:
+        print("Error: Unsupported file format.", file=sys.stderr)
+        sys.exit(1)
+        
+    # Process the file in chunks
+    first_chunk = True
+    ip_col, ts_col = None, None
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        results_iterator = executor.map(lambda row: enrich_ip(row, api_token), valid_records_for_enrichment)
-        write_to_json_stream(results_iterator, output_file_path)
+        for chunk in reader:
+            if first_chunk:
+                ip_col, ts_col = find_and_map_columns(chunk)
+                first_chunk = False
+            
+            # Count the number of IP records in the chunk
+            total_ips += len(chunk)
 
+            # Process the chunk and get a list of dictionaries
+            chunk_data = process_chunk(chunk, ip_col, ts_col)
+
+            # Submit tasks to the executor
+            results_iterator = executor.map(lambda row: enrich_ip(row, api_token), chunk_data)
+
+            # Stream the results to the file
+            write_to_json_stream(results_iterator, output_file_path, total_processed_count, start_main_time)
+            
     print("All enrichment tasks completed and results written to file.")
+    print(f"Total IPs read for enrichment: {total_ips}")
 
     end_main_time = time.time()
     total_runtime = end_main_time - start_main_time
