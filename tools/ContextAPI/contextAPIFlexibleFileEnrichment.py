@@ -15,7 +15,7 @@ api_url_base = "https://api.spur.us/v2/context/"
 
 # Set the maximum number of concurrent workers (threads) for API calls
 # Be mindful of API rate limits when setting this value.
-MAX_WORKERS = 32 # Set to a more conservative number for stability
+MAX_WORKERS = 32
 
 # Chunk size for reading large files to prevent memory issues
 CHUNK_SIZE = 10000
@@ -124,8 +124,8 @@ def find_and_map_columns(df):
         if 'timestamp' in col and ts_col_original is None:
             ts_col_original = original_columns[i]
 
-    if ip_col_original is None or ts_col_original is None:
-        raise ValueError("Input file must contain a column for IP (e.g., 'ip address', 'ips') and a column for 'timestamp'.")
+    if ip_col_original is None:
+        raise ValueError("Input file must contain a column for IP (e.g., 'ip address', 'ips').")
     
     return ip_col_original, ts_col_original
 
@@ -138,33 +138,36 @@ def process_chunk(df_chunk, ip_col, ts_col):
     for index, row in df_chunk.iterrows():
         row_dict = row.to_dict()
         
-        # Use the original column names to access and pop the data
+        # Map the identified IP column to the standardized key
         row_dict['IP'] = row_dict.pop(ip_col)
-        row_dict['Timestamp'] = row_dict.pop(ts_col)
         
-        # Process timestamp to YYYYMMDD format
-        timestamp_str = str(row_dict.get('Timestamp')) if pd.notna(row_dict.get('Timestamp')) else None
-        formatted_timestamp = None
-        if timestamp_str and timestamp_str.lower() != 'nan':
-            try:
-                dt_obj = datetime.strptime(timestamp_str, '%m/%d/%Y %H:%M')
-                formatted_timestamp = dt_obj.strftime('%Y%m%d')
-            except ValueError:
+        # If a timestamp column was found, process and map it
+        if ts_col:
+            timestamp_value = row_dict.pop(ts_col)
+            timestamp_str = str(timestamp_value) if pd.notna(timestamp_value) else None
+            formatted_timestamp = None
+            if timestamp_str and timestamp_str.lower() != 'nan':
                 try:
-                    # Handle ISO 8601 format with or without 'Z'
-                    if timestamp_str.endswith('Z'):
-                        dt_obj = datetime.fromisoformat(timestamp_str.replace('Z', ''))
-                    else:
-                        dt_obj = datetime.fromisoformat(timestamp_str)
+                    dt_obj = datetime.strptime(timestamp_str, '%m/%d/%Y %H:%M')
                     formatted_timestamp = dt_obj.strftime('%Y%m%d')
                 except ValueError:
                     try:
-                        datetime.strptime(timestamp_str, '%Y%m%d')
-                        formatted_timestamp = timestamp_str
+                        if timestamp_str.endswith('Z'):
+                            dt_obj = datetime.fromisoformat(timestamp_str.replace('Z', ''))
+                        else:
+                            dt_obj = datetime.fromisoformat(timestamp_str)
+                        formatted_timestamp = dt_obj.strftime('%Y%m%d')
                     except ValueError:
-                        formatted_timestamp = None
-        
-        row_dict['Timestamp'] = formatted_timestamp
+                        try:
+                            datetime.strptime(timestamp_str, '%Y%m%d')
+                            formatted_timestamp = timestamp_str
+                        except ValueError:
+                            formatted_timestamp = None
+            
+            row_dict['Timestamp'] = formatted_timestamp
+        else:
+            # Add an empty Timestamp key if the column was not found
+            row_dict['Timestamp'] = None
 
         # Clean up any other unexpected Timestamp objects that might be present
         for key, value in row_dict.items():
@@ -228,9 +231,8 @@ if __name__ == "__main__":
 
     print(f"Reading data from {input_file_path} in chunks of {CHUNK_SIZE}...")
     total_ips = 0
-    total_processed_count = [0] # Use a list to pass by reference
+    total_processed_count = [0]
 
-    # Set up the appropriate pandas reader for chunking
     if input_file_path.lower().endswith('.csv'):
         reader = pd.read_csv(input_file_path, chunksize=CHUNK_SIZE)
     elif input_file_path.lower().endswith(('.xls', '.xlsx')):
@@ -239,7 +241,6 @@ if __name__ == "__main__":
         print("Error: Unsupported file format.", file=sys.stderr)
         sys.exit(1)
         
-    # Process the file in chunks
     ip_col, ts_col = None, None
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         for chunk in reader:
