@@ -148,21 +148,30 @@ def process_chunk(df_chunk, ip_col, ts_col):
             formatted_timestamp = None
             if timestamp_str and timestamp_str.lower() != 'nan':
                 try:
-                    dt_obj = datetime.strptime(timestamp_str, '%m/%d/%Y %H:%M')
+                    # New format check for MM/DD/YYYY
+                    dt_obj = datetime.strptime(timestamp_str, '%m/%d/%Y')
                     formatted_timestamp = dt_obj.strftime('%Y%m%d')
                 except ValueError:
                     try:
-                        if timestamp_str.endswith('Z'):
-                            dt_obj = datetime.fromisoformat(timestamp_str.replace('Z', ''))
-                        else:
-                            dt_obj = datetime.fromisoformat(timestamp_str)
+                        # Existing format check for MM/DD/YYYY HH:MM
+                        dt_obj = datetime.strptime(timestamp_str, '%m/%d/%Y %H:%M')
                         formatted_timestamp = dt_obj.strftime('%Y%m%d')
                     except ValueError:
                         try:
-                            datetime.strptime(timestamp_str, '%Y%m%d')
-                            formatted_timestamp = timestamp_str
+                            # Handle ISO 8601 format with or without 'Z'
+                            if timestamp_str.endswith('Z'):
+                                dt_obj = datetime.fromisoformat(timestamp_str.replace('Z', ''))
+                            else:
+                                dt_obj = datetime.fromisoformat(timestamp_str)
+                            formatted_timestamp = dt_obj.strftime('%Y%m%d')
                         except ValueError:
-                            formatted_timestamp = None
+                            try:
+                                # Existing format check for YYYYMMDD
+                                datetime.strptime(timestamp_str, '%Y%m%d')
+                                formatted_timestamp = timestamp_str
+                            except ValueError:
+                                # All parsing attempts failed
+                                formatted_timestamp = None
             
             row_dict['Timestamp'] = formatted_timestamp
         else:
@@ -224,7 +233,6 @@ if __name__ == "__main__":
             output_file_name_input += ".json"
         output_file_path = os.path.join(output_dir, output_file_name_input)
 
-    # Truncate the output file at the start of a new run
     if os.path.exists(output_file_path):
         with open(output_file_path, 'w') as f:
             f.truncate(0)
