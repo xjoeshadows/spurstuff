@@ -7,7 +7,7 @@
   - a simple tool to do an enrichment on the user's current external IP with colorized output
 
 - ### contextAPIFlexibleFileEnrichment.py:
-  - Enriches a CSV with variable columns to JSONL, variable workers for parallel requests, outputs to JSONL.
+  - Enriches a CSV of IPs and outputs to JSONL. Requires at least a column entitled IPs, IP Addresses, etc...and also accepts a Timestamp column for historical Context API lookups. Will take any additional columns (such as a transaction ID column) and appends to the output enrichment e.g. for correlation purposes. The script has a variable number of workers for parallel lookup requests.
 
 - ### IPs+Timestamps.csv:
   - Sample CSV file
