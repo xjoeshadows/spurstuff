@@ -1,4 +1,5 @@
-## A collection of tools to interact with Spur's Feeds. All scripts expect a Spur token to be set as $TOKEN, otherwise will prompt the user to paste it in.
+## A collection of tools to interact with Spur's Feeds.  
+#### *All scripts expect a Spur token to be set as $TOKEN, otherwise will prompt the user to paste it in.
 
 - ### dailyfeedcounts.py: 
   - Will grab the line count of each of the feeds, report them to the user, and export to a YYYYMMDDDailyFeedCount.txt file. Handy for adding to your .zshrc file and for doing date over date comparisons of growth of the feeds.
