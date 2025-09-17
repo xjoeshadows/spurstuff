@@ -258,9 +258,26 @@ def download_and_decompress_gz_to_file(url, token, output_path):
         response = requests.get(url, headers=headers, stream=True)
         response.raise_for_status()
 
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded_size = 0
+        start_time = time.time()
+        last_update_time = start_time
+
         with open(output_path, 'wb') as outfile:
             for chunk in response.iter_content(chunk_size=8192):
                 outfile.write(chunk)
+                downloaded_size += len(chunk)
+                current_time = time.time()
+                if current_time - last_update_time >= 5: # Update progress every 5 seconds
+                    percentage = (downloaded_size / total_size) * 100 if total_size else 0
+                    elapsed_time = current_time - start_time
+                    rate = (downloaded_size / (1024 * 1024)) / elapsed_time if elapsed_time else 0
+                    sys.stdout.write(f"\rDownloading... {percentage:.2f}% ({downloaded_size / (1024 * 1024):.2f} MB / {total_size / (1024 * 1024):.2f} MB) at {rate:.2f} MB/s")
+                    sys.stdout.flush()
+                    last_update_time = current_time
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            
         print(f"Successfully downloaded gzipped file to: {output_path}")
 
         decompressed_file_path = os.path.splitext(output_path)[0]
@@ -308,9 +325,26 @@ def download_raw_file_to_disk(url, token, output_path):
         response = requests.get(url, headers=headers, stream=True)
         response.raise_for_status()
 
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded_size = 0
+        start_time = time.time()
+        last_update_time = start_time
+
         with open(output_path, 'wb') as outfile:
             for chunk in response.iter_content(chunk_size=8192):
                 outfile.write(chunk)
+                downloaded_size += len(chunk)
+                current_time = time.time()
+                if current_time - last_update_time >= 5: # Update progress every 5 seconds
+                    percentage = (downloaded_size / total_size) * 100 if total_size else 0
+                    elapsed_time = current_time - start_time
+                    rate = (downloaded_size / (1024 * 1024)) / elapsed_time if elapsed_time else 0
+                    sys.stdout.write(f"\rDownloading... {percentage:.2f}% ({downloaded_size / (1024 * 1024):.2f} MB / {total_size / (1024 * 1024):.2f} MB) at {rate:.2f} MB/s")
+                    sys.stdout.flush()
+                    last_update_time = current_time
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+
         print(f"Successfully downloaded raw file to: {output_path}")
         return output_path
     except requests.exceptions.RequestException as e:
