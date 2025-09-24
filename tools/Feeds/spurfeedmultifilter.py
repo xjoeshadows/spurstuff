@@ -158,74 +158,132 @@ def process_file_chunk(args_tuple):
                     kws = criterion['keywords']
                     match_type_keywords = criterion['match_type_keywords']
 
-                    source_value_raw = ""
-                    
-                    # Logic to handle searching across flattened keys
+                    # Start with the object flattened once for efficiency
                     flattened_obj = flatten_json(json_obj)
                     
-                    # New logic to handle simplified key names
+                    # Determine the source value(s)
+                    source_value_raw = None # Use None to explicitly check if key was found or is empty
+                    source_key_found = False
+                    
                     if key_name.startswith('tunnels_'):
                         sub_key = key_name.split('_', 1)[1]
-                        # Find all flattened keys that match the simplified key
                         relevant_keys = [k for k in flattened_obj.keys() if k.startswith('tunnels_') and k.endswith(f'_{sub_key}')]
                         
-                        source_values = [str(flattened_obj[k]) for k in relevant_keys if k in flattened_obj]
-                        source_value_raw = ','.join(source_values)
-                    else:
-                        source_value_raw = str(flattened_obj.get(key_name, ''))
+                        if relevant_keys:
+                            source_key_found = True
+                            source_values = [str(flattened_obj[k]) for k in relevant_keys if k in flattened_obj and str(flattened_obj[k]).strip().lower() not in ('none', 'null')]
+                            source_value_raw = ','.join(source_values)
+                        # If relevant_keys is empty or all values are effectively empty, source_value_raw remains None
+                        
+                    elif key_name:
+                        if key_name in flattened_obj:
+                            source_key_found = True
+                            value = flattened_obj.get(key_name)
+                            if value is not None:
+                                # Standardize value for comparison
+                                str_value = str(value).strip().lower()
+                                if str_value not in ('none', 'null'):
+                                    source_value_raw = str_value
+                        
+                    else: # General search across lines (no specific key)
+                        source_key_found = True
+                        source_value_raw = line_stripped.lower()
 
                     # Evaluate keywords within this single criterion
                     current_kws_match_status = False # Default for OR, will be True for AND
-                    if match_type_keywords == 'AND':
-                        current_kws_match_status = True # Assume true, set false if any fails
-                        for kw in kws:
-                            num_match = re.match(r'([<>]?=?)\s*(\-?\d+(\.\d+)?)$', kw, re.IGNORECASE)
-                            if num_match:
-                                operator = num_match.group(1)
-                                target_num_str = num_match.group(2)
-                                try:
-                                    target_num = float(target_num_str)
-                                    actual_num = float(source_value_raw)
-                                    if operator == '>':
-                                        if not (actual_num > target_num): current_kws_match_status = False; break
-                                    elif operator == '<':
-                                        if not (actual_num < target_num): current_kws_match_status = False; break
-                                    elif operator == '>=':
-                                        if not (actual_num >= target_num): current_kws_match_status = False; break
-                                    elif operator == '<=':
-                                        if not (actual_num <= target_num): current_kws_match_status = False; break
-                                    elif operator == '=' or operator == '':
-                                        if not (actual_num == target_num): current_kws_match_status = False; break
-                                except ValueError:
-                                    current_kws_match_status = False; break
-                            else: # Not numerical, perform substring match
-                                if kw.lower() not in source_value_raw.lower(): # Case-insensitive substring match
-                                    current_kws_match_status = False; break
-                    elif match_type_keywords == 'OR':
-                        current_kws_match_status = False # Assume false, set true if any passes
-                        for kw in kws:
-                            num_match = re.match(r'([<>]?=?)\s*(\-?\d+(\.\d+)?)$', kw, re.IGNORECASE)
-                            if num_match:
-                                operator = num_match.group(1)
-                                target_num_str = num_match.group(2)
-                                try:
-                                    target_num = float(target_num_str)
-                                    actual_num = float(source_value_raw)
-                                    if operator == '>':
-                                        if (actual_num > target_num): current_kws_match_status = True; break
-                                    elif operator == '<':
-                                        if (actual_num < target_num): current_kws_match_status = True; break
-                                    elif operator == '>=':
-                                        if (actual_num >= target_num): current_kws_match_status = True; break
-                                    elif operator == '<=':
-                                        if (actual_num <= target_num): current_kws_match_status = True; break
-                                    elif operator == '=' or operator == '':
-                                        if (actual_num == target_num): current_kws_match_status = True; break
-                                except ValueError:
-                                    pass # Continue to next keyword if numerical comparison fails
-                            else: # Not numerical, perform substring match
-                                if kw.lower() in source_value_raw.lower(): # Case-insensitive substring match
-                                    current_kws_match_status = True; break
+                    
+                    # --- Special case filtering for EMPTY/NOT EMPTY ---
+                    if '=empty' in kws or '!=empty' in kws:
+                        if match_type_keywords == 'AND':
+                            current_kws_match_status = True
+                            for kw in kws:
+                                if kw == '=empty':
+                                    # Fail if key is found and not empty (source_value_raw is not None and not an empty string)
+                                    if source_value_raw and source_value_raw.strip():
+                                        current_kws_match_status = False; break
+                                elif kw == '!=empty':
+                                    # Fail if key is not found OR if key is found but its value is empty (source_value_raw is None or an empty string)
+                                    if not source_value_raw or not source_value_raw.strip():
+                                        current_kws_match_status = False; break
+                                else:
+                                    # Handle mixed filters: Treat non-EMPTY keywords as requiring !=EMPTY implicitly
+                                    if not source_value_raw or kw not in source_value_raw:
+                                        current_kws_match_status = False; break
+                        
+                        elif match_type_keywords == 'OR':
+                            current_kws_match_status = False
+                            for kw in kws:
+                                if kw == '=empty':
+                                    # Match if key is not found or is empty
+                                    if not source_value_raw or not source_value_raw.strip():
+                                        current_kws_match_status = True; break
+                                elif kw == '!=empty':
+                                    # Match if key is found and not empty
+                                    if source_value_raw and source_value_raw.strip():
+                                        current_kws_match_status = True; break
+                                else:
+                                    # Match if the normal keyword search works on the non-empty value
+                                    if source_value_raw and kw in source_value_raw:
+                                        current_kws_match_status = True; break
+                        
+                    # --- Standard substring/numerical filtering ---
+                    elif source_value_raw:
+                        # Convert to string and lowercase once for case-insensitive matching
+                        source_value_raw = str(source_value_raw).lower() 
+                        
+                        if match_type_keywords == 'AND':
+                            current_kws_match_status = True
+                            for kw in kws:
+                                num_match = re.match(r'([<>]?=?)\s*(\-?\d+(\.\d+)?)$', kw, re.IGNORECASE)
+                                if num_match:
+                                    operator = num_match.group(1)
+                                    target_num_str = num_match.group(2)
+                                    try:
+                                        target_num = float(target_num_str)
+                                        actual_num = float(source_value_raw)
+                                        if operator == '>':
+                                            if not (actual_num > target_num): current_kws_match_status = False; break
+                                        elif operator == '<':
+                                            if not (actual_num < target_num): current_kws_match_status = False; break
+                                        elif operator == '>=':
+                                            if not (actual_num >= target_num): current_kws_match_status = False; break
+                                        elif operator == '<=':
+                                            if not (actual_num <= target_num): current_kws_match_status = False; break
+                                        elif operator == '=' or operator == '':
+                                            if not (actual_num == target_num): current_kws_match_status = False; break
+                                    except ValueError:
+                                        current_kws_match_status = False; break
+                                else: # Substring match
+                                    if kw not in source_value_raw:
+                                        current_kws_match_status = False; break
+                        
+                        elif match_type_keywords == 'OR':
+                            current_kws_match_status = False
+                            for kw in kws:
+                                num_match = re.match(r'([<>]?=?)\s*(\-?\d+(\.\d+)?)$', kw, re.IGNORECASE)
+                                if num_match:
+                                    operator = num_match.group(1)
+                                    target_num_str = num_match.group(2)
+                                    try:
+                                        target_num = float(target_num_str)
+                                        actual_num = float(source_value_raw)
+                                        if operator == '>':
+                                            if (actual_num > target_num): current_kws_match_status = True; break
+                                        elif operator == '<':
+                                            if (actual_num < target_num): current_kws_match_status = True; break
+                                        elif operator == '>=':
+                                            if (actual_num >= target_num): current_kws_match_status = True; break
+                                        elif operator == '<=':
+                                            if (actual_num <= target_num): current_kws_match_status = True; break
+                                        elif operator == '=' or operator == '':
+                                            if (actual_num == target_num): current_kws_match_status = True; break
+                                    except ValueError:
+                                        pass 
+                                else: # Substring match
+                                    if kw in source_value_raw:
+                                        current_kws_match_status = True; break
+                                
+                    # If source_value_raw is None or empty, non-EMPTY/!=EMPTY searches fail to match (current_kws_match_status remains False)
                     
                     criterion_results.append(current_kws_match_status)
 
@@ -490,6 +548,9 @@ if __name__ == "__main__":
             
             download_successful = False
             download_filename_temp = f"{current_date_ymd}"
+            
+            # --- Determine Base Filename for Download ---
+            temp_base_feed_name = base_feed_name
             if base_feed_name == "AnonResRT" or base_feed_name == "AnonymousResidentialRT":
                 if current_time_hms:
                     download_filename_temp += f"{current_time_hms}"
@@ -498,13 +559,15 @@ if __name__ == "__main__":
                     download_filename_temp += f"{current_time_hms}"
             
             if base_feed_name == "AnonymousResidentialHist":
-                download_filename_temp += "AnonymousResidential"
+                temp_base_feed_name = "AnonymousResidential"
             elif base_feed_name == "ServiceMetricsAllHist":
-                download_filename_temp += "ServiceMetricsAll"
+                temp_base_feed_name = "ServiceMetricsAll"
             elif base_feed_name == "AnonymousHist":
-                download_filename_temp += "Anonymous"
-            else:
-                download_filename_temp += base_feed_name
+                temp_base_feed_name = "Anonymous"
+            
+            download_filename_temp += temp_base_feed_name
+            # --- End Determine Base Filename for Download ---
+
 
             if needs_decompression:
                 download_filename_temp += ".json.gz"
@@ -658,7 +721,7 @@ if __name__ == "__main__":
                         continue 
                     # If user says Yes, continue to the keyword input part below
                         
-                current_keywords_input = input(f"  Enter keywords for key '{current_filter_key}' (comma-separated, e.g., 'malicious,trojan'): ").strip()
+                current_keywords_input = input(f"  Enter keywords for key '{current_filter_key}' (comma-separated, e.g., 'malicious,trojan', or **=EMPTY**, **!=EMPTY**): ").strip()
             
             elif perform_key_specific_filter_choice == 'N':
                 current_keywords_input = input("  Enter keywords for general search across lines (comma-separated, e.g., 'malicious,trojan'): ").strip()
@@ -667,7 +730,16 @@ if __name__ == "__main__":
                 continue
             
             if current_keywords_input:
+                # Convert keywords to lowercase for case-insensitive matching
                 current_keywords = [kw.strip().lower() for kw in current_keywords_input.split(',') if kw.strip()]
+                
+                # Check for incompatible keywords when using =EMPTY or !=EMPTY
+                if '=empty' in current_keywords or '!=empty' in current_keywords:
+                    # In this mode, we force OR matching for mixed empty/non-empty filters
+                    # The process_file_chunk function handles the logical AND/OR internally
+                    # here we just ensure the user knows which logic applies if they choose multiple
+                    pass
+                
                 if current_keywords:
                     # Only ask for match type if there's more than one keyword
                     if len(current_keywords) > 1:
