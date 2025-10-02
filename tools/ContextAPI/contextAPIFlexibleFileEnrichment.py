@@ -148,17 +148,17 @@ def process_chunk(df_chunk, ip_col, ts_col):
             formatted_timestamp = None
             if timestamp_str and timestamp_str.lower() != 'nan':
                 try:
-                    # New format check for MM/DD/YYYY
+                    # Check for M/D/YYYY (e.g., 8/15/2025 or 08/15/2025)
                     dt_obj = datetime.strptime(timestamp_str, '%m/%d/%Y')
                     formatted_timestamp = dt_obj.strftime('%Y%m%d')
                 except ValueError:
                     try:
-                        # Existing format check for MM/DD/YYYY HH:MM
+                        # Existing format check for MM/DD/YYYY HH:MM (e.g., 08/15/2025 10:30)
                         dt_obj = datetime.strptime(timestamp_str, '%m/%d/%Y %H:%M')
                         formatted_timestamp = dt_obj.strftime('%Y%m%d')
                     except ValueError:
                         try:
-                            # Handle ISO 8601 format with or without 'Z'
+                            # Handle ISO 8601 format (e.g., 2025-08-15T00:00:00.000Z)
                             if timestamp_str.endswith('Z'):
                                 dt_obj = datetime.fromisoformat(timestamp_str.replace('Z', ''))
                             else:
@@ -206,6 +206,15 @@ if __name__ == "__main__":
     
     if input_file_path is None:
         print("\n--- Input File Required ---")
+        
+        # Display accepted timestamp formats to the user
+        print("Accepted Timestamp Formats (if a Timestamp column is present):")
+        print("  - M/D/YYYY (e.g., 8/15/2025 or 08/15/2025)")
+        print("  - M/D/YYYY HH:MM (e.g., 8/15/2025 10:30)")
+        print("  - ISO 8601 (e.g., 2025-08-15T00:00:00.000Z)")
+        print("  - YYYYMMDD (e.g., 20250815)")
+        print("-" * 35)
+
         while True:
             file_input = input("Enter the path to your CSV or XLSX file: ").strip()
             if not file_input:
@@ -237,14 +246,16 @@ if __name__ == "__main__":
         with open(output_file_path, 'w') as f:
             f.truncate(0)
 
-    print(f"Reading data from {input_file_path} in chunks of {CHUNK_SIZE}...")
+    print(f"Reading data from {input_file_path}...")
     total_ips = 0
     total_processed_count = [0]
 
-    if input_file_path.lower().endswith('.csv'):
+    file_extension = input_file_path.lower().split('.')[-1]
+    
+    if file_extension == 'csv':
         reader = pd.read_csv(input_file_path, chunksize=CHUNK_SIZE)
-    elif input_file_path.lower().endswith(('.xls', '.xlsx')):
-        reader = pd.read_excel(input_file_path, chunksize=CHUNK_SIZE)
+    elif file_extension in ['xls', 'xlsx']:
+        reader = [pd.read_excel(input_file_path)]
     else:
         print("Error: Unsupported file format.", file=sys.stderr)
         sys.exit(1)
@@ -252,6 +263,8 @@ if __name__ == "__main__":
     ip_col, ts_col = None, None
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         for chunk in reader:
+            chunk.columns = chunk.columns.str.lower().str.strip()
+            
             if ip_col is None:
                 ip_col, ts_col = find_and_map_columns(chunk)
             
