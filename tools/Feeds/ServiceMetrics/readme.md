@@ -8,6 +8,7 @@
 
 - servicemetrics-manual-diff-enrich.py: will do a diff the same as the previous diff script via user supplied ServiceMetricsList files such as what may have been downloaded/converted by other scripts, but will also then enrich each of the diff'd tags against the tag lookup API and output a jsonl with the details for each tag. Order of the input files argument matters. **Usage: servicemetrics-manual-diff-enrich.py ServiceMetricsList1.txt ServiceMetricsList2.txt**
 
+- servicemetrics_historicdiff.py: Will download the latest Service Metrics feed, ask the user for an 8 digit date (YYYYMMDD), download that historic Service Metrics feed, and then show the diff in service tags added/removed between them.
 
 #### Extra:
 
