@@ -8,7 +8,6 @@
 
 - servicemetrics-manual-diff-enrich.py: will do a diff the same as the previous diff script via user supplied ServiceMetricsList files such as what may have been downloaded/converted by other scripts, but will also then enrich each of the diff'd tags against the tag lookup API and output a jsonl with the details for each tag. Order of the input files argument matters. **Usage: servicemetrics-manual-diff-enrich.py ServiceMetricsList1.txt ServiceMetricsList2.txt**
 
-- servicemetrics-auto-diff-enrich.py: will download the newest full service metrics feed and asks the user for an older service tags list file to compare against. It will then do a diff and then enrich each of the added tags against the tag lookup API and output a jsonl of the details for each tag.
 
 #### Extra:
 
@@ -17,3 +16,5 @@
 
 - serviceMetrics-findresidentialproxies.py: Will download the latest ServiceMetrics feed and grep for "residential_proxy" to help find interesting res proxy services.
 
+#### Archived:
+- servicemetrics-auto-diff-enrich.py: will download the newest full service metrics feed and asks the user for an older service tags list file to compare against. It will then do a diff and then enrich each of the added tags against the tag lookup API and output a jsonl of the details for each tag.
