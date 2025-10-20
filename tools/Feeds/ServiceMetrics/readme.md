@@ -12,7 +12,7 @@
 
 #### Extra:
 
-- servicemetrics-listmaker.py: will convert a full Service Metrics feed file into a list of service tags which can be used by any of these scripts where the script takes an input file of service tags, e.g. **servicemetrics-manual-diff-enrich.py YYYYMMDDServiceMetricsAll.json**
+- servicemetrics-listmaker.py: will convert a full Service Metrics feed file into a list of service tags which can be used by any of these scripts where the script takes an input file of service tags, e.g. **servicemetrics-listmaker.py YYYYMMDDServiceMetricsAll.json**
 
 #### Archived:
 - servicemetrics-auto-diff-enrich.py: will download the newest full service metrics feed and asks the user for an older service tags list file to compare against. It will then do a diff and then enrich each of the added tags against the tag lookup API and output a jsonl of the details for each tag.
