@@ -38,7 +38,7 @@ HTTP.mount("https://", ADAPTER)
 HTTP.mount("http://", ADAPTER)
 
 # --- Functions ---
-def enrich_ip(row_data, api_token):
+def enrich_ip(row_data, api_token, perform_historic_lookup):
     """
     Enriches a single IP address using the Spur API, optionally with a timestamp,
     and merges additional row data into the JSON response.
@@ -47,13 +47,15 @@ def enrich_ip(row_data, api_token):
         row_data (dict): A dictionary representing a row from the input file,
                          expected to contain 'IP', 'Timestamp' (formatted), and other columns.
         api_token (str): The API authentication token.
+        perform_historic_lookup (bool): If True, use the Timestamp in the API call.
 
     Returns:
         dict: The combined JSON response from the API and the input row data,
               or None if an error occurs or IP is invalid.
     """
     ip_address = row_data.get('IP')
-    timestamp = row_data.get('Timestamp')
+    # Use the timestamp only if historic lookup is requested and the key exists
+    timestamp = row_data.get('Timestamp') if perform_historic_lookup else None
 
     if not ip_address or str(ip_address).lower() == 'nan':
         return None
@@ -130,9 +132,11 @@ def find_and_map_columns(df):
     return ip_col_original, ts_col_original
 
 
-def process_chunk(df_chunk, ip_col, ts_col):
+def process_chunk(df_chunk, ip_col, ts_col, perform_historic_lookup):
     """
     Processes a single pandas DataFrame chunk.
+    If a timestamp column exists, it is parsed. If perform_historic_lookup is False,
+    the 'Timestamp' key is removed before being passed to the enrichment function.
     """
     all_rows_data = []
     for index, row in df_chunk.iterrows():
@@ -146,37 +150,49 @@ def process_chunk(df_chunk, ip_col, ts_col):
             timestamp_value = row_dict.pop(ts_col)
             timestamp_str = str(timestamp_value) if pd.notna(timestamp_value) else None
             formatted_timestamp = None
+            
+            # Only attempt parsing if the string is not empty or 'nan'
             if timestamp_str and timestamp_str.lower() != 'nan':
                 try:
-                    # Check for M/D/YYYY (e.g., 8/15/2025 or 08/15/2025)
-                    dt_obj = datetime.strptime(timestamp_str, '%m/%d/%Y')
+                    # Check for Day, Mon DD, YYYY HH:MM PM/AM TZ
+                    dt_obj = datetime.strptime(timestamp_str, '%a, %b %d, %Y %I:%M %p %Z')
                     formatted_timestamp = dt_obj.strftime('%Y%m%d')
                 except ValueError:
                     try:
-                        # Existing format check for MM/DD/YYYY HH:MM (e.g., 08/15/2025 10:30)
-                        dt_obj = datetime.strptime(timestamp_str, '%m/%d/%Y %H:%M')
+                        # Check for M/D/YYYY (e.g., 8/15/2025 or 08/15/2025)
+                        dt_obj = datetime.strptime(timestamp_str, '%m/%d/%Y')
                         formatted_timestamp = dt_obj.strftime('%Y%m%d')
                     except ValueError:
                         try:
-                            # Handle ISO 8601 format (e.g., 2025-08-15T00:00:00.000Z)
-                            if timestamp_str.endswith('Z'):
-                                dt_obj = datetime.fromisoformat(timestamp_str.replace('Z', ''))
-                            else:
-                                dt_obj = datetime.fromisoformat(timestamp_str)
+                            # Existing format check for MM/DD/YYYY HH:MM (e.g., 08/15/2025 10:30)
+                            dt_obj = datetime.strptime(timestamp_str, '%m/%d/%Y %H:%M')
                             formatted_timestamp = dt_obj.strftime('%Y%m%d')
                         except ValueError:
                             try:
-                                # Existing format check for YYYYMMDD
-                                datetime.strptime(timestamp_str, '%Y%m%d')
-                                formatted_timestamp = timestamp_str
+                                # Handle ISO 8601 format (e.g., 2025-08-15T00:00:00.000Z)
+                                if timestamp_str.endswith('Z'):
+                                    dt_obj = datetime.fromisoformat(timestamp_str.replace('Z', ''))
+                                else:
+                                    dt_obj = datetime.fromisoformat(timestamp_str)
+                                formatted_timestamp = dt_obj.strftime('%Y%m%d')
                             except ValueError:
-                                # All parsing attempts failed
-                                formatted_timestamp = None
+                                try:
+                                    # Existing format check for YYYYMMDD
+                                    datetime.strptime(timestamp_str, '%Y%m%d')
+                                    formatted_timestamp = timestamp_str
+                                except ValueError:
+                                    # All parsing attempts failed
+                                    formatted_timestamp = None
             
             row_dict['Timestamp'] = formatted_timestamp
+            
+            # **NEW LOGIC:** If historic lookup is NOT requested, remove the timestamp from the output
+            if not perform_historic_lookup:
+                row_dict.pop('Timestamp', None) # Safely remove the key
         else:
-            # Add an empty Timestamp key if the column was not found
-            row_dict['Timestamp'] = None
+            # If no timestamp column was found, no 'Timestamp' key is added to row_dict
+            pass
+
 
         # Clean up any other unexpected Timestamp objects that might be present
         for key, value in row_dict.items():
@@ -213,7 +229,8 @@ if __name__ == "__main__":
         print("  - M/D/YYYY HH:MM (e.g., 8/15/2025 10:30)")
         print("  - ISO 8601 (e.g., 2025-08-15T00:00:00.000Z)")
         print("  - YYYYMMDD (e.g., 20250815)")
-        print("-" * 35)
+        print("  - Day, Mon DD, YYYY HH:MM PM/AM TZ (e.g., Wed, Sep 10, 2025 10:29 PM UTC)")
+        print("-" * 70)
 
         while True:
             file_input = input("Enter the path to your CSV or XLSX file: ").strip()
@@ -229,7 +246,49 @@ if __name__ == "__main__":
     output_dir = os.path.dirname(input_file_path)
     input_file_basename = os.path.basename(input_file_path)
     input_file_name_without_ext = os.path.splitext(input_file_basename)[0]
-    default_output_file_name = f"{input_file_name_without_ext}_SpurEnrichment.json"
+
+    # --- File Reading and Column Detection ---
+    print(f"Reading data from {input_file_path}...")
+    
+    file_extension = input_file_path.lower().split('.')[-1]
+    
+    if file_extension == 'csv':
+        # Read only the first chunk to detect columns and prompt for lookup
+        reader = pd.read_csv(input_file_path, chunksize=CHUNK_SIZE)
+        first_chunk = next(reader)
+        # Reset reader to start from the beginning for the main loop
+        reader = pd.read_csv(input_file_path, chunksize=CHUNK_SIZE)
+    elif file_extension in ['xls', 'xlsx']:
+        # Read entire Excel file (since chunksize is not supported)
+        first_chunk = pd.read_excel(input_file_path)
+        reader = [first_chunk]
+    else:
+        print("Error: Unsupported file format.", file=sys.stderr)
+        sys.exit(1)
+        
+    # Normalize column names in the first chunk for detection
+    first_chunk.columns = first_chunk.columns.str.lower().str.strip()
+    ip_col, ts_col = find_and_map_columns(first_chunk)
+    
+    # --- Historic Lookup Prompt ---
+    perform_historic_lookup = False
+    if ts_col:
+        print("-" * 35)
+        lookup_input = input(f"A Timestamp column ('{ts_col}') was detected. Perform historical lookups using the timestamp? (yes/no): ").strip().lower()
+        if lookup_input in ['yes', 'y']:
+            perform_historic_lookup = True
+            print("✅ Performing historical lookups using timestamps.")
+        else:
+            print("❌ Performing current-time lookups (timestamps will be excluded from the final output).")
+        print("-" * 35)
+    else:
+        print("No Timestamp column detected. Performing current-time lookups.")
+
+    # --- Output Filename Setup ---
+    if perform_historic_lookup:
+        default_output_file_name = f"{input_file_name_without_ext}_SpurHistoricEnrichment.json"
+    else:
+        default_output_file_name = f"{input_file_name_without_ext}_SpurEnrichment.json"
 
     output_file_name_input = input(f"Enter the desired output file name (e.g., ip_data_enriched.json), or press Enter for default ({default_output_file_name}): ").strip()
     
@@ -246,31 +305,19 @@ if __name__ == "__main__":
         with open(output_file_path, 'w') as f:
             f.truncate(0)
 
-    print(f"Reading data from {input_file_path}...")
+    # --- Main Processing Loop ---
     total_ips = 0
-    total_processed_count = [0]
+    total_processed_count = [0] # Use a list to pass by reference
 
-    file_extension = input_file_path.lower().split('.')[-1]
-    
-    if file_extension == 'csv':
-        reader = pd.read_csv(input_file_path, chunksize=CHUNK_SIZE)
-    elif file_extension in ['xls', 'xlsx']:
-        reader = [pd.read_excel(input_file_path)]
-    else:
-        print("Error: Unsupported file format.", file=sys.stderr)
-        sys.exit(1)
-        
-    ip_col, ts_col = None, None
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         for chunk in reader:
+            # Ensure column names are normalized for consistency across all chunks
             chunk.columns = chunk.columns.str.lower().str.strip()
-            
-            if ip_col is None:
-                ip_col, ts_col = find_and_map_columns(chunk)
             
             total_ips += len(chunk)
 
-            chunk_data = process_chunk(chunk, ip_col, ts_col)
+            # Pass the historic lookup flag to process_chunk
+            chunk_data = process_chunk(chunk, ip_col, ts_col, perform_historic_lookup)
 
             valid_records_for_enrichment = [
                 row for row in chunk_data 
@@ -281,7 +328,11 @@ if __name__ == "__main__":
                 print(f"No valid IP addresses found in chunk. Skipping chunk of size {len(chunk)}.", file=sys.stderr)
                 continue
 
-            results_iterator = executor.map(lambda row: enrich_ip(row, api_token), valid_records_for_enrichment)
+            # Pass the perform_historic_lookup flag to the executor's lambda
+            results_iterator = executor.map(
+                lambda row: enrich_ip(row, api_token, perform_historic_lookup), 
+                valid_records_for_enrichment
+            )
 
             write_to_json_stream(results_iterator, output_file_path, total_processed_count, start_main_time)
             
