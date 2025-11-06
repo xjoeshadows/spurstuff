@@ -38,7 +38,7 @@ HTTP.mount("https://", ADAPTER)
 HTTP.mount("http://", ADAPTER)
 
 # --- Functions ---
-def enrich_ip(row_data, api_token, perform_historic_lookup):
+def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo):
     """
     Enriches a single IP address using the Spur API, optionally with a timestamp,
     and merges additional row data into the JSON response.
@@ -48,6 +48,7 @@ def enrich_ip(row_data, api_token, perform_historic_lookup):
                          expected to contain 'IP', 'Timestamp' (formatted), and other columns.
         api_token (str): The API authentication token.
         perform_historic_lookup (bool): If True, use the Timestamp in the API call.
+        use_maxmind_geo (bool): If True, append the mmgeo=1 parameter for MaxMind data.
 
     Returns:
         dict: The combined JSON response from the API and the input row data,
@@ -61,8 +62,18 @@ def enrich_ip(row_data, api_token, perform_historic_lookup):
         return None
 
     url = f"{api_url_base}{ip_address}"
+    
+    query_params = []
+    
     if timestamp:
-        url += f"?dt={timestamp}"
+        query_params.append(f"dt={timestamp}")
+        
+    if use_maxmind_geo:
+        query_params.append("mmgeo=1")
+
+    if query_params:
+        url += "?" + "&".join(query_params)
+        
     headers = {'TOKEN': api_token}
 
     try:
@@ -186,7 +197,7 @@ def process_chunk(df_chunk, ip_col, ts_col, perform_historic_lookup):
             
             row_dict['Timestamp'] = formatted_timestamp
             
-            # **NEW LOGIC:** If historic lookup is NOT requested, remove the timestamp from the output
+            # If historic lookup is NOT requested, remove the timestamp from the output
             if not perform_historic_lookup:
                 row_dict.pop('Timestamp', None) # Safely remove the key
         else:
@@ -220,6 +231,7 @@ if __name__ == "__main__":
     if len(sys.argv) == 2:
         input_file_path = sys.argv[1]
     
+    # --- Interactive File Input if not provided as argument ---
     if input_file_path is None:
         print("\n--- Input File Required ---")
         
@@ -284,6 +296,17 @@ if __name__ == "__main__":
     else:
         print("No Timestamp column detected. Performing current-time lookups.")
 
+    # --- MaxMind Geo Prompt ---
+    use_maxmind_geo = False
+    print("-" * 35)
+    geo_input = input("Do you want to use MaxMind for geolocation data (mmgeo=1 parameter)? (yes/no): ").strip().lower()
+    if geo_input in ['yes', 'y']:
+        use_maxmind_geo = True
+        print("✅ MaxMind geolocation parameter will be used.")
+    else:
+        print("❌ Standard geolocation will be used (no mmgeo parameter).")
+    print("-" * 35)
+
     # --- Output Filename Setup ---
     if perform_historic_lookup:
         default_output_file_name = f"{input_file_name_without_ext}_SpurHistoricEnrichment.json"
@@ -328,9 +351,9 @@ if __name__ == "__main__":
                 print(f"No valid IP addresses found in chunk. Skipping chunk of size {len(chunk)}.", file=sys.stderr)
                 continue
 
-            # Pass the perform_historic_lookup flag to the executor's lambda
+            # Pass the perform_historic_lookup and use_maxmind_geo flags to the executor's lambda
             results_iterator = executor.map(
-                lambda row: enrich_ip(row, api_token, perform_historic_lookup), 
+                lambda row: enrich_ip(row, api_token, perform_historic_lookup, use_maxmind_geo), 
                 valid_records_for_enrichment
             )
 
