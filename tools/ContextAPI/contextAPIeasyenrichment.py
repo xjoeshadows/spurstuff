@@ -16,21 +16,33 @@ BACKOFF_FACTOR = 1
 RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
-def enrich_single_ip(ip: str, token: str, date_str: str = None) -> tuple:
+def enrich_single_ip(ip: str, token: str, date_str: str = None, use_mmgeo: bool = False) -> tuple:
     """
-    Enriches a single IP, optionally for a specific date, with retry logic.
+    Enriches a single IP, optionally for a specific date and/or with MaxMind Geo.
     """
     headers = {"Token": token}
-    api_url = f"https://api.spur.us/v2/context/{ip}"
+    base_url = f"https://api.spur.us/v2/context/{ip}"
+    params = []
+
+    # Add historical date parameter if provided
     if date_str:
-        api_url += f"?dt={date_str}"
+        params.append(f"dt={date_str}")
+    
+    # Add MaxMind Geo parameter if requested
+    if use_mmgeo:
+        params.append("mmgeo=1")
+
+    # Build the final URL
+    api_url = base_url
+    if params:
+        api_url += "?" + "&".join(params)
     
     for attempt in range(MAX_RETRIES + 1):
         try:
             response = requests.get(api_url, headers=headers, timeout=15)
             response.raise_for_status()
             result = {
-                "query": {"ip": ip, "lookupDate": date_str},
+                "query": {"ip": ip, "lookupDate": date_str, "useMmgeo": use_mmgeo},
                 "enrichmentData": response.json()
             }
             return ("success", result)
@@ -41,15 +53,15 @@ def enrich_single_ip(ip: str, token: str, date_str: str = None) -> tuple:
                      print(f"  > Retrying {ip} in {delay:.2f}s...", file=sys.stderr)
                 time.sleep(delay)
             else:
-                return ("error", f"Failed for {ip} (date: {date_str}): HTTP {err.response.status_code} - {err.response.reason}")
+                return ("error", f"Failed for {ip} (query: {api_url}): HTTP {err.response.status_code} - {err.response.reason}")
         except requests.exceptions.RequestException as err:
             if attempt < MAX_RETRIES:
                 delay = BACKOFF_FACTOR * (2 ** attempt) + random.uniform(0, 1)
                 print(f"  > Retrying {ip} in {delay:.2f}s...", file=sys.stderr)
                 time.sleep(delay)
             else:
-                return ("error", f"Failed for {ip} (date: {date_str}) after {MAX_RETRIES} retries: {err}")
-    return ("error", f"Failed for {ip} (date: {date_str}) after {MAX_RETRIES} retries.")
+                return ("error", f"Failed for {ip} (query: {api_url}) after {MAX_RETRIES} retries: {err}")
+    return ("error", f"Failed for {ip} (query: {api_url}) after {MAX_RETRIES} retries.")
 
 
 def get_ips_from_user() -> list:
@@ -85,7 +97,7 @@ def get_ips_from_user() -> list:
 def get_historical_date() -> str | None:
     """Asks user if they want to perform a historical lookup and validates date."""
     while True:
-        sys.stderr.write("Perform a historical lookup for a specific date? (yes/no): ")
+        sys.stderr.write("\nPerform a historical lookup for a specific date? (yes/no): ")
         sys.stderr.flush()
         choice = sys.stdin.readline().strip().lower()
 
@@ -105,6 +117,20 @@ def get_historical_date() -> str | None:
         
         print("Invalid input. Please enter 'yes' or 'no'.", file=sys.stderr)
 
+def get_mmgeo_preference() -> bool:
+    """Asks user if they want to use MaxMind for geolocation."""
+    while True:
+        sys.stderr.write("\nUse MaxMind for geolocation (mmgeo=1)? (yes/no): ")
+        sys.stderr.flush()
+        choice = sys.stdin.readline().strip().lower()
+
+        if choice in ['no', 'n']:
+            return False
+        if choice in ['yes', 'y']:
+            return True
+        
+        print("Invalid input. Please enter 'yes' or 'no'.", file=sys.stderr)
+
 
 def run_enrichment_flow():
     """Main function to manage the enrichment workflow."""
@@ -118,18 +144,23 @@ def run_enrichment_flow():
         print("\nNo IP addresses were provided. Exiting.", file=sys.stderr)
         return
 
+    # --- Get query preferences ---
     date_str = get_historical_date()
+    use_mmgeo = get_mmgeo_preference()
 
     if date_str:
         print(f"\nPerforming historical lookup for date: {date_str}", file=sys.stderr)
+    if use_mmgeo:
+        print("Using MaxMind geolocation.", file=sys.stderr)
     
-    print(f"Found {len(ip_list)} IP(s). Starting enrichment... ⚙️\n", file=sys.stderr)
+    print(f"\nFound {len(ip_list)} IP(s). Starting enrichment... ⚙️\n", file=sys.stderr)
 
     all_results = []
     failed_ips = []
     
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_ip = {executor.submit(enrich_single_ip, ip, api_token, date_str): ip for ip in ip_list}
+        # Pass all preferences to each worker
+        future_to_ip = {executor.submit(enrich_single_ip, ip, api_token, date_str, use_mmgeo): ip for ip in ip_list}
         for future in as_completed(future_to_ip):
             ip = future_to_ip[future]
             try:
@@ -160,9 +191,6 @@ def run_enrichment_flow():
             export_choice = sys.stdin.readline().strip().lower()
 
             if export_choice in ["yes", "y"]:
-                
-                # --- MODIFIED: Use the historical date for the filename if it exists ---
-                # Otherwise, use the current date
                 filename_date = date_str or datetime.now().strftime('%Y%m%d')
                 filename = f"{filename_date}IPEnrichment.json"
                 
