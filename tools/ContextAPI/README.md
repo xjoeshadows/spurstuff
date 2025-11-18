@@ -9,6 +9,9 @@
 
 - ### contextAPIFlexibleFileEnrichment.py:
   - Enriches a CSV of IPs and outputs to JSONL. Requires at least a column entitled IPs, IP Addresses, etc...and also accepts a Timestamp column for historical Context API lookups. Will take any additional columns (such as a transaction ID column) and appends to the output enrichment e.g. for correlation purposes. The script has a variable number of workers for parallel lookup requests.
+ 
+- ### contextAPI_timelineanalysis.py
+  - Will enrich an IP or IPs with multiple dates based on the user timeline specified and return the changes to the data over that timeline for quick temporal analysis. 
 
 - ### IPs+Timestamps.csv:
   - Sample CSV file
