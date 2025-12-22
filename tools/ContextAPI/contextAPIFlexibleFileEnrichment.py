@@ -6,24 +6,16 @@ import os
 import pandas as pd
 from datetime import datetime
 import concurrent.futures
-from requests.adapters import HTTPAdapter # For retries
-from urllib3.util.retry import Retry # For retry strategy
-import time # For progress indicator
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import time
 
 # --- Configuration ---
 api_url_base = "https://api.spur.us/v2/context/"
-
-# Set the maximum number of concurrent workers (threads) for API calls
-# Be mindful of API rate limits when setting this value.
 MAX_WORKERS = 32
-
-# Chunk size for reading large files to prevent memory issues
 CHUNK_SIZE = 10000
-
-# API request timeout in seconds. Crucial for preventing indefinite hangs.
 REQUEST_TIMEOUT = 10
 
-# Retry strategy for transient network errors and potential soft rate limits
 RETRY_STRATEGY = Retry(
     total=8,
     backoff_factor=2,
@@ -31,7 +23,6 @@ RETRY_STRATEGY = Retry(
     allowed_methods=["GET"]
 )
 
-# Create a session with the retry strategy
 ADAPTER = HTTPAdapter(max_retries=RETRY_STRATEGY)
 HTTP = requests.Session()
 HTTP.mount("https://", ADAPTER)
@@ -39,35 +30,17 @@ HTTP.mount("http://", ADAPTER)
 
 # --- Functions ---
 def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo):
-    """
-    Enriches a single IP address using the Spur API, optionally with a timestamp,
-    and merges additional row data into the JSON response.
-
-    Args:
-        row_data (dict): A dictionary representing a row from the input file,
-                         expected to contain 'IP', 'Timestamp' (formatted), and other columns.
-        api_token (str): The API authentication token.
-        perform_historic_lookup (bool): If True, use the Timestamp in the API call.
-        use_maxmind_geo (bool): If True, append the mmgeo=1 parameter for MaxMind data.
-
-    Returns:
-        dict: The combined JSON response from the API and the input row data,
-              or None if an error occurs or IP is invalid.
-    """
     ip_address = row_data.get('IP')
-    # Use the timestamp only if historic lookup is requested and the key exists
     timestamp = row_data.get('Timestamp') if perform_historic_lookup else None
 
     if not ip_address or str(ip_address).lower() == 'nan':
         return None
 
     url = f"{api_url_base}{ip_address}"
-    
     query_params = []
     
     if timestamp:
         query_params.append(f"dt={timestamp}")
-        
     if use_maxmind_geo:
         query_params.append("mmgeo=1")
 
@@ -79,52 +52,13 @@ def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo):
     try:
         response = HTTP.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
-        
         json_response = response.json()
-        merged_response = {**row_data, **json_response}
-
-        return merged_response
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404:
-            print(f"No Enrichment Data for {ip_address} on {timestamp}", file=sys.stderr)
-        else:
-            print(f"Error enriching {ip_address} (timestamp={timestamp}): {e}", file=sys.stderr)
-        return None
-    except requests.exceptions.RequestException as e:
-        print(f"Error enriching {ip_address} (timestamp={timestamp}): {e}", file=sys.stderr)
-        return None
-
-def write_to_json_stream(results_iterator, output_path, total_processed_count_ref, start_time):
-    """
-    Writes a stream of JSON objects to a JSON Lines file.
-    Each JSON object is written on a new line.
-    """
-    last_update_time = time.time()
-    try:
-        # Open the file in append mode. It's handled in main to be truncated on the first run.
-        with open(output_path, 'a', encoding='utf-8') as outfile:
-            for result in results_iterator:
-                if result:
-                    outfile.write(json.dumps(result, ensure_ascii=False) + '\n')
-                    total_processed_count_ref[0] += 1
-                
-                current_time = time.time()
-                if current_time - last_update_time >= 5:
-                    elapsed_time = current_time - start_time
-                    records_per_second = total_processed_count_ref[0] / elapsed_time if elapsed_time > 0 else 0
-                    print(f"  Processed {total_processed_count_ref[0]} records ({records_per_second:.2f} records/s) - {time.strftime('%H:%M:%S', time.gmtime(elapsed_time))} elapsed")
-                    last_update_time = current_time
-
+        return {**row_data, **json_response}
     except Exception as e:
-        print(f"Error writing to JSON Lines file: {e}", file=sys.stderr)
-        sys.exit(1)
-
+        print(f"Error enriching {ip_address}: {e}", file=sys.stderr)
+        return None
 
 def find_and_map_columns(df):
-    """
-    Finds and maps the IP and Timestamp columns from a DataFrame.
-    Returns the original column names.
-    """
     original_columns = df.columns
     normalized_columns = original_columns.str.lower().str.strip()
     
@@ -142,70 +76,53 @@ def find_and_map_columns(df):
     
     return ip_col_original, ts_col_original
 
-
 def process_chunk(df_chunk, ip_col, ts_col, perform_historic_lookup):
-    """
-    Processes a single pandas DataFrame chunk.
-    If a timestamp column exists, it is parsed. If perform_historic_lookup is False,
-    the 'Timestamp' key is removed before being passed to the enrichment function.
-    """
     all_rows_data = []
     for index, row in df_chunk.iterrows():
         row_dict = row.to_dict()
-        
-        # Map the identified IP column to the standardized key
         row_dict['IP'] = row_dict.pop(ip_col)
         
-        # If a timestamp column was found, process and map it
         if ts_col:
-            timestamp_value = row_dict.pop(ts_col)
-            timestamp_str = str(timestamp_value) if pd.notna(timestamp_value) else None
+            val = row_dict.pop(ts_col)
             formatted_timestamp = None
             
-            # Only attempt parsing if the string is not empty or 'nan'
-            if timestamp_str and timestamp_str.lower() != 'nan':
+            if pd.notna(val) and str(val).lower() != 'nan':
+                # 1. Try Epoch conversion
                 try:
-                    # Check for Day, Mon DD, YYYY HH:MM PM/AM TZ
-                    dt_obj = datetime.strptime(timestamp_str, '%a, %b %d, %Y %I:%M %p %Z')
-                    formatted_timestamp = dt_obj.strftime('%Y%m%d')
-                except ValueError:
-                    try:
-                        # Check for M/D/YYYY (e.g., 8/15/2025 or 08/15/2025)
-                        dt_obj = datetime.strptime(timestamp_str, '%m/%d/%Y')
+                    epoch_val = float(val)
+                    if epoch_val > 100000000:
+                        dt_obj = datetime.fromtimestamp(epoch_val)
                         formatted_timestamp = dt_obj.strftime('%Y%m%d')
-                    except ValueError:
+                except (ValueError, OverflowError):
+                    # 2. Try Standard String Formats
+                    ts_str = str(val).strip()
+                    formats = [
+                        '%a, %b %d, %Y %I:%M %p %Z',
+                        '%m/%d/%Y',
+                        '%m/%d/%Y %H:%M',
+                        '%Y%m%d'
+                    ]
+                    for fmt in formats:
                         try:
-                            # Existing format check for MM/DD/YYYY HH:MM (e.g., 08/15/2025 10:30)
-                            dt_obj = datetime.strptime(timestamp_str, '%m/%d/%Y %H:%M')
+                            dt_obj = datetime.strptime(ts_str, fmt)
+                            formatted_timestamp = dt_obj.strftime('%Y%m%d')
+                            break
+                        except ValueError:
+                            continue
+                    
+                    if not formatted_timestamp:
+                        # 3. Try ISO as last resort
+                        try:
+                            dt_obj = datetime.fromisoformat(ts_str.replace('Z', ''))
                             formatted_timestamp = dt_obj.strftime('%Y%m%d')
                         except ValueError:
-                            try:
-                                # Handle ISO 8601 format (e.g., 2025-08-15T00:00:00.000Z)
-                                if timestamp_str.endswith('Z'):
-                                    dt_obj = datetime.fromisoformat(timestamp_str.replace('Z', ''))
-                                else:
-                                    dt_obj = datetime.fromisoformat(timestamp_str)
-                                formatted_timestamp = dt_obj.strftime('%Y%m%d')
-                            except ValueError:
-                                try:
-                                    # Existing format check for YYYYMMDD
-                                    datetime.strptime(timestamp_str, '%Y%m%d')
-                                    formatted_timestamp = timestamp_str
-                                except ValueError:
-                                    # All parsing attempts failed
-                                    formatted_timestamp = None
-            
+                            formatted_timestamp = None
+
             row_dict['Timestamp'] = formatted_timestamp
-            
-            # If historic lookup is NOT requested, remove the timestamp from the output
             if not perform_historic_lookup:
-                row_dict.pop('Timestamp', None) # Safely remove the key
-        else:
-            # If no timestamp column was found, no 'Timestamp' key is added to row_dict
-            pass
+                row_dict.pop('Timestamp', None)
 
-
-        # Clean up any other unexpected Timestamp objects that might be present
+        # Sanitize any existing pandas Timestamps to strings
         for key, value in row_dict.items():
             if isinstance(value, pd.Timestamp):
                 row_dict[key] = str(value)
@@ -213,6 +130,24 @@ def process_chunk(df_chunk, ip_col, ts_col, perform_historic_lookup):
         all_rows_data.append(row_dict)
     return all_rows_data
 
+def write_to_json_stream(results_iterator, output_path, total_processed_count_ref, start_time):
+    last_update_time = time.time()
+    try:
+        with open(output_path, 'a', encoding='utf-8') as outfile:
+            for result in results_iterator:
+                if result:
+                    outfile.write(json.dumps(result, ensure_ascii=False) + '\n')
+                    total_processed_count_ref[0] += 1
+                
+                current_time = time.time()
+                if current_time - last_update_time >= 5:
+                    elapsed = current_time - start_time
+                    rps = total_processed_count_ref[0] / elapsed if elapsed > 0 else 0
+                    print(f"  Processed {total_processed_count_ref[0]} records ({rps:.2f} r/s) - {time.strftime('%H:%M:%S', time.gmtime(elapsed))} elapsed")
+                    last_update_time = current_time
+    except Exception as e:
+        print(f"Error writing to file: {e}", file=sys.stderr)
+        sys.exit(1)
 
 # --- Main Script ---
 if __name__ == "__main__":
@@ -220,148 +155,91 @@ if __name__ == "__main__":
 
     api_token = os.environ.get("TOKEN")
     if not api_token:
-        print("Error: TOKEN environment variable not set.")
         api_token = input("Please enter your Spur API token: ").strip()
         if not api_token:
-            print("No API token provided. Exiting.", file=sys.stderr)
+            print("No token provided. Exiting.", file=sys.stderr)
             sys.exit(1)
         os.environ['TOKEN'] = api_token
     
-    input_file_path = None
-    if len(sys.argv) == 2:
-        input_file_path = sys.argv[1]
+    input_file_path = sys.argv[1] if len(sys.argv) == 2 else None
     
-    # --- Interactive File Input if not provided as argument ---
     if input_file_path is None:
         print("\n--- Input File Required ---")
-        
-        # Display accepted timestamp formats to the user
-        print("Accepted Timestamp Formats (if a Timestamp column is present):")
-        print("  - M/D/YYYY (e.g., 8/15/2025 or 08/15/2025)")
-        print("  - M/D/YYYY HH:MM (e.g., 8/15/2025 10:30)")
-        print("  - ISO 8601 (e.g., 2025-08-15T00:00:00.000Z)")
-        print("  - YYYYMMDD (e.g., 20250815)")
+        print("Accepted Timestamp Formats:")
+        print("  - Epoch (e.g., 1766060380)")
+        print("  - M/D/YYYY (e.g., 8/15/2025)")
         print("  - Day, Mon DD, YYYY HH:MM PM/AM TZ (e.g., Wed, Sep 10, 2025 10:29 PM UTC)")
+        print("  - ISO 8601 (e.g., 2025-08-15T00:00:00.000Z)")
         print("-" * 70)
 
         while True:
             file_input = input("Enter the path to your CSV or XLSX file: ").strip()
-            if not file_input:
-                print("File path cannot be empty. Please try again.")
-                continue
-            if not os.path.exists(file_input):
-                print(f"Error: Input file not found at {file_input}. Please check the path and try again.")
-                continue
-            input_file_path = file_input
-            break
+            if os.path.exists(file_input):
+                input_file_path = file_input
+                break
+            print(f"Error: File not found.")
 
     output_dir = os.path.dirname(input_file_path)
     input_file_basename = os.path.basename(input_file_path)
     input_file_name_without_ext = os.path.splitext(input_file_basename)[0]
 
-    # --- File Reading and Column Detection ---
+    # --- Initial Read for Detection ---
     print(f"Reading data from {input_file_path}...")
+    file_ext = input_file_path.lower().split('.')[-1]
     
-    file_extension = input_file_path.lower().split('.')[-1]
-    
-    if file_extension == 'csv':
-        # Read only the first chunk to detect columns and prompt for lookup
+    if file_ext == 'csv':
         reader = pd.read_csv(input_file_path, chunksize=CHUNK_SIZE)
         first_chunk = next(reader)
-        # Reset reader to start from the beginning for the main loop
         reader = pd.read_csv(input_file_path, chunksize=CHUNK_SIZE)
-    elif file_extension in ['xls', 'xlsx']:
-        # Read entire Excel file (since chunksize is not supported)
+    else:
         first_chunk = pd.read_excel(input_file_path)
         reader = [first_chunk]
-    else:
-        print("Error: Unsupported file format.", file=sys.stderr)
-        sys.exit(1)
         
-    # Normalize column names in the first chunk for detection
     first_chunk.columns = first_chunk.columns.str.lower().str.strip()
     ip_col, ts_col = find_and_map_columns(first_chunk)
     
-    # --- Historic Lookup Prompt ---
+    # --- Configuration Prompts ---
     perform_historic_lookup = False
     if ts_col:
         print("-" * 35)
-        lookup_input = input(f"A Timestamp column ('{ts_col}') was detected. Perform historical lookups using the timestamp? (yes/no): ").strip().lower()
-        if lookup_input in ['yes', 'y']:
-            perform_historic_lookup = True
-            print("✅ Performing historical lookups using timestamps.")
-        else:
-            print("❌ Performing current-time lookups (timestamps will be excluded from the final output).")
+        lookup_input = input(f"A Timestamp column ('{ts_col}') was detected. Perform historical lookups? (yes/no): ").strip().lower()
+        perform_historic_lookup = lookup_input in ['yes', 'y']
+        status = "✅ YES" if perform_historic_lookup else "❌ NO (Timestamp will be removed from output)"
+        print(f"Historical lookups: {status}")
         print("-" * 35)
-    else:
-        print("No Timestamp column detected. Performing current-time lookups.")
 
-    # --- MaxMind Geo Prompt ---
     use_maxmind_geo = False
     print("-" * 35)
-    geo_input = input("Do you want to use MaxMind for geolocation data (mmgeo=1 parameter)? (yes/no): ").strip().lower()
-    if geo_input in ['yes', 'y']:
-        use_maxmind_geo = True
-        print("✅ MaxMind geolocation parameter will be used.")
-    else:
-        print("❌ Standard geolocation will be used (no mmgeo parameter).")
+    geo_input = input("Use MaxMind for geolocation (mmgeo=1)? (yes/no): ").strip().lower()
+    use_maxmind_geo = geo_input in ['yes', 'y']
+    print(f"MaxMind Geo: {'✅ Enabled' if use_maxmind_geo else '❌ Disabled'}")
     print("-" * 35)
 
-    # --- Output Filename Setup ---
+    # --- Filename Logic ---
     if perform_historic_lookup:
-        default_output_file_name = f"{input_file_name_without_ext}_SpurHistoricEnrichment.json"
+        default_out = f"{input_file_name_without_ext}_SpurHistoricEnrichment.json"
     else:
-        default_output_file_name = f"{input_file_name_without_ext}_SpurEnrichment.json"
+        default_out = f"{input_file_name_without_ext}_SpurEnrichment.json"
 
-    output_file_name_input = input(f"Enter the desired output file name (e.g., ip_data_enriched.json), or press Enter for default ({default_output_file_name}): ").strip()
-    
-    if not output_file_name_input:
-        output_file_path = os.path.join(output_dir, default_output_file_name)
-        print(f"Using default output file name: {default_output_file_name}")
-    else:
-        output_file_name_input = "".join(x for x in output_file_name_input if x.isalnum() or x in "._-")
-        if not output_file_name_input.endswith(".json"):
-            output_file_name_input += ".json"
-        output_file_path = os.path.join(output_dir, output_file_name_input)
+    out_input = input(f"Enter output file name, or press Enter for default ({default_out}): ").strip()
+    output_file_path = os.path.join(output_dir, out_input if out_input else default_out)
 
     if os.path.exists(output_file_path):
-        with open(output_file_path, 'w') as f:
-            f.truncate(0)
+        open(output_file_path, 'w').close()
 
-    # --- Main Processing Loop ---
+    # --- Main Loop ---
     total_ips = 0
-    total_processed_count = [0] # Use a list to pass by reference
-
+    total_processed = [0]
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         for chunk in reader:
-            # Ensure column names are normalized for consistency across all chunks
             chunk.columns = chunk.columns.str.lower().str.strip()
-            
             total_ips += len(chunk)
-
-            # Pass the historic lookup flag to process_chunk
             chunk_data = process_chunk(chunk, ip_col, ts_col, perform_historic_lookup)
-
-            valid_records_for_enrichment = [
-                row for row in chunk_data 
-                if row.get('IP') and str(row['IP']).lower() != 'nan'
-            ]
+            valid = [r for r in chunk_data if r.get('IP') and str(r['IP']).lower() != 'nan']
             
-            if not valid_records_for_enrichment:
-                print(f"No valid IP addresses found in chunk. Skipping chunk of size {len(chunk)}.", file=sys.stderr)
-                continue
-
-            # Pass the perform_historic_lookup and use_maxmind_geo flags to the executor's lambda
-            results_iterator = executor.map(
-                lambda row: enrich_ip(row, api_token, perform_historic_lookup, use_maxmind_geo), 
-                valid_records_for_enrichment
-            )
-
-            write_to_json_stream(results_iterator, output_file_path, total_processed_count, start_main_time)
+            results = executor.map(lambda r: enrich_ip(r, api_token, perform_historic_lookup, use_maxmind_geo), valid)
+            write_to_json_stream(results, output_file_path, total_processed, start_main_time)
             
-    print("All enrichment tasks completed and results written to file.")
-    print(f"Total IPs read for enrichment: {total_ips}")
-
-    end_main_time = time.time()
-    total_runtime = end_main_time - start_main_time
-    print(f"Total script runtime: {time.strftime('%H:%M:%S', time.gmtime(total_runtime))}")
+    print(f"\nAll enrichment tasks completed.")
+    print(f"Total IPs: {total_ips} | Saved to: {output_file_path}")
+    print(f"Total runtime: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start_main_time))}")
