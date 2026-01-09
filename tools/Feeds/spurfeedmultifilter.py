@@ -73,9 +73,20 @@ def get_output_filename(current_date_ymd, current_time_hms, base_feed_name, user
     default_filename = "".join(filename_parts) + ".json"
     return default_filename
 
-def get_file_chunks(filepath, num_chunks):
-    """Determines byte offsets for splitting a file into roughly equal chunks."""
+def get_file_chunks(filepath, min_chunks):
+    """
+    Determines byte offsets for splitting a file.
+    OPTIMIZATION: Targets ~64MB chunks to prevent memory bloat in workers.
+    """
     file_size = os.path.getsize(filepath)
+    
+    # Target chunk size: 64MB (safe for memory even with 100% match rate)
+    TARGET_CHUNK_SIZE = 64 * 1024 * 1024
+    
+    # Calculate required chunks based on size, but ensure at least 'min_chunks' (CPU count)
+    size_based_chunks = (file_size // TARGET_CHUNK_SIZE) + 1
+    num_chunks = max(min_chunks, size_based_chunks)
+    
     chunk_size = file_size // num_chunks
     
     chunks = []
@@ -89,17 +100,20 @@ def get_file_chunks(filepath, num_chunks):
                 f.readline() 
                 start_byte = f.tell()
             
-            chunks.append((start_byte, end_byte))
+            if start_byte < end_byte:
+                chunks.append((start_byte, end_byte))
+                
     return chunks
 
 def process_file_chunk(args_tuple):
     """
     Processes a specific byte range (chunk) of a file.
-    Includes logic for negation (!) and empty/not-empty checks.
+    OPTIMIZATION: Returns raw strings (line_stripped) instead of dict objects.
     """
     filepath, start_byte, end_byte, filter_criteria, overall_match_type = args_tuple
     
-    matching_objects = []
+    matching_lines = [] # Renamed from matching_objects
+    
     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
         f.seek(start_byte)
         
@@ -114,6 +128,7 @@ def process_file_chunk(args_tuple):
                 continue
             
             try:
+                # We still parse to check logic, but we won't store the result
                 json_obj = json.loads(line_stripped)
                 
                 # Evaluate each filter criterion
@@ -154,16 +169,10 @@ def process_file_chunk(args_tuple):
                     # --- Evaluate Keywords ---
                     current_kws_match_status = True if match_type_keywords == 'AND' else False
                     
-                    # Optimization: We check keywords one by one.
-                    # If AND: we fail immediately on first False.
-                    # If OR: we succeed immediately on first True.
-                    
                     for kw in kws:
-                        # Determine if this specific keyword matches
                         individual_match = False
                         
                         # Handle Negation Logic (!)
-                        # Note: We must distinguish between '!keyword' and '!=empty'
                         is_negation = False
                         clean_kw = kw
                         
@@ -199,17 +208,14 @@ def process_file_chunk(args_tuple):
                                     elif operator == '<=' and actual_num <= target_num: individual_match = True
                                     elif (operator == '=' or operator == '') and actual_num == target_num: individual_match = True
                                 except ValueError:
-                                    pass # Not a number, ignore
+                                    pass 
                             else:
-                                # String Substring Check
                                 if clean_kw in val_str:
                                     individual_match = True
                         
-                        # Apply Negation to the result found above
                         if is_negation:
                             individual_match = not individual_match
 
-                        # Update overall status based on AND/OR logic
                         if match_type_keywords == 'AND':
                             if not individual_match:
                                 current_kws_match_status = False
@@ -221,7 +227,6 @@ def process_file_chunk(args_tuple):
                     
                     criterion_results.append(current_kws_match_status)
 
-                # Combine results of all criteria based on overall_match_type
                 final_match = False
                 if overall_match_type == 'AND':
                     final_match = all(criterion_results)
@@ -229,7 +234,9 @@ def process_file_chunk(args_tuple):
                     final_match = any(criterion_results)
                 
                 if final_match:
-                    matching_objects.append(json_obj)
+                    # OPTIMIZATION: Store the raw string, not the dict object
+                    matching_lines.append(line_stripped)
+
             except json.JSONDecodeError:
                 pass 
             except Exception:
@@ -237,7 +244,7 @@ def process_file_chunk(args_tuple):
             
             if current_byte >= end_byte:
                 break
-    return matching_objects
+    return matching_lines
 
 def download_and_decompress_gz_to_file(url, token, output_path):
     """Downloads and decompresses a .gz file."""
@@ -662,12 +669,12 @@ if __name__ == "__main__":
     else:
         perform_filter = 'Y'
 
-    # RESTORED: Dynamic default filename prompt
+    # Generate the dynamic default filename based on selected filters
     default_generated_filename = get_output_filename(
         current_date_ymd, 
         current_time_hms, 
         base_feed_name,
-        "",  # Empty user filename to generate default
+        "",  
         filter_criteria if perform_filter == 'Y' else [],
         overall_match_type
     )
@@ -696,6 +703,7 @@ if __name__ == "__main__":
 
     try:
         with open(output_file_path, 'w', encoding='utf-8') as outfile:
+            # OPTIMIZATION: Pass CPU count as min_chunks, but allow more chunks if file is large
             chunks = get_file_chunks(decompressed_source_file_path, NUM_PARALLEL_PROCESSORS)
             
             with multiprocessing.Pool(processes=NUM_PARALLEL_PROCESSORS) as pool:
@@ -704,10 +712,11 @@ if __name__ == "__main__":
                     [(decompressed_source_file_path, start, end, filter_criteria, overall_match_type) for start, end in chunks]
                 )
                 
-                for matching_objects_in_chunk in results_iterator:
+                for matching_lines_in_chunk in results_iterator:
                     try: 
-                        for obj in matching_objects_in_chunk:
-                            outfile.write(json.dumps(obj, ensure_ascii=False) + '\n')
+                        for line in matching_lines_in_chunk:
+                            # OPTIMIZATION: Write the string directly, no json.dumps() needed
+                            outfile.write(line + '\n')
                             records_exported_count += 1
                         
                         if records_exported_count % 1000 == 0:
