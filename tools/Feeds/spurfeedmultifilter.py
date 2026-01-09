@@ -1,13 +1,3 @@
-This is a great idea for performance and flexibility. Instead of hard-coding the sample size to 500,000 lines (which can be slow on massive files or overkill on small ones), the user can now choose their own sample size.
-
-Here is the complete updated script. I have added two new input prompts:
-
-1. **Key Sampling:** "How many lines to sample for keys? (Default 500000):"
-2. **Value Sampling:** "How many lines to sample for values? (Default 500000):"
-
-Both inputs default to `500000` if the user just hits Enter.
-
-```python
 #!/usr/bin/env python3
 import os
 import datetime
@@ -672,7 +662,18 @@ if __name__ == "__main__":
     else:
         perform_filter = 'Y'
 
-    user_output_filename = input(f"Enter output filename: ").strip()
+    # RESTORED: Dynamic default filename prompt
+    default_generated_filename = get_output_filename(
+        current_date_ymd, 
+        current_time_hms, 
+        base_feed_name,
+        "",  # Empty user filename to generate default
+        filter_criteria if perform_filter == 'Y' else [],
+        overall_match_type
+    )
+
+    user_output_filename = input(f"Enter output filename (Default: {default_generated_filename}): ").strip()
+    
     filtered_output_filename = get_output_filename(
         current_date_ymd, 
         current_time_hms, 
@@ -726,5 +727,3 @@ if __name__ == "__main__":
     print("\nScript finished.")
     total_elapsed_seconds = time.time() - script_start_time
     print(f"\nTotal execution time: {int(total_elapsed_seconds // 60)} Minutes {int(total_elapsed_seconds % 60)} Seconds")
-
-```
