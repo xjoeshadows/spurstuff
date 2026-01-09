@@ -1,10 +1,10 @@
 ## A collection of tools to interact with Spur's Feeds. Substitute your own token variable for the placeholder in the scripts. 
 #### *All scripts expect a Spur token to be set as $TOKEN, otherwise will prompt the user to paste it in.
 
-- ### easyenrichment.py: 
+- ### contextAPIeasyenrichment.py: 
   - An easy way to do context api enrichment. Accepts a filename of IPs (comma, newline, or space separated) as an argument as well as pasting into the terminal.
   
-- ### currentipenrichment.py
+- ### spurcurrentipenrichment.py
   - a simple tool to do an enrichment on the user's current external IP with colorized output
 
 - ### contextAPIFlexibleFileEnrichment.py:
