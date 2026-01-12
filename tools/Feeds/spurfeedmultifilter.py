@@ -751,20 +751,23 @@ if __name__ == "__main__":
                             outfile.write(line + '\n')
                             records_exported_count += 1
                         
-                        # 3. Update Feedback: Show Chunk Progress + Record Count
+                        # 3. Update Feedback: Single line update with carriage return
                         if chunks_completed % 5 == 0 or records_exported_count % 1000 == 0:
                             elapsed_time = time.time() - start_time
                             records_per_second = records_exported_count / elapsed_time if elapsed_time > 0 else 0
                             progress_pct = (chunks_completed / total_chunks) * 100
-                            print(f"  Progress: {progress_pct:.1f}% ({chunks_completed}/{total_chunks} chunks) | Exported: {records_exported_count} records ({records_per_second:.2f} rec/s)")
+                            sys.stdout.write(f"\r  Progress: {progress_pct:.1f}% ({chunks_completed}/{total_chunks} chunks) | Exported: {records_exported_count} records ({records_per_second:.2f} rec/s)")
+                            sys.stdout.flush()
 
                     except Exception as exc:
-                        print(f"Error processing chunk: {exc}", file=sys.stderr)
+                        print(f"\nError processing chunk: {exc}", file=sys.stderr)
             
+            # Print a newline to ensure the final success message is on a new line
+            print()
             print(f"Successfully exported {records_exported_count} records to {output_file_path}.")
 
     except Exception as e:
-        print(f"Error during export: {e}", file=sys.stderr)
+        print(f"\nError during export: {e}", file=sys.stderr)
         sys.exit(1)
 
     print("\nScript finished.")
