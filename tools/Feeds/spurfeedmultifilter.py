@@ -8,6 +8,7 @@ import multiprocessing # For true CPU parallelism
 import time
 import requests # For downloading feeds
 import gzip # For decompressing feeds
+import shutil # For moving files safely
 
 # --- Configuration ---
 # API Token for downloading feeds (if chosen by user)
@@ -112,7 +113,7 @@ def process_file_chunk(args_tuple):
     """
     filepath, start_byte, end_byte, filter_criteria, overall_match_type = args_tuple
     
-    matching_lines = [] # Renamed from matching_objects
+    matching_lines = [] 
     
     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
         f.seek(start_byte)
@@ -664,8 +665,28 @@ if __name__ == "__main__":
             overall_match_type = overall_match_type_choice
 
     if not filter_criteria:
-        print("No filters provided. All records will be exported.", file=sys.stderr)
-        perform_filter = 'N'
+        # --- NO FILTERING: BYPASS PROCESSING ---
+        
+        # Determine strict output name
+        current_filename = os.path.basename(decompressed_source_file_path)
+        user_output_filename = input(f"Enter output filename (Default: {current_filename}): ").strip()
+        
+        if not user_output_filename:
+             print(f"File available at: {decompressed_source_file_path}")
+        else:
+            # Rename/Move source to user specific name
+            final_output_path = get_output_filename(
+                current_date_ymd, current_time_hms, base_feed_name, user_output_filename, [], overall_match_type
+            )
+            # Ensure we don't overwrite if they just typed the same name
+            if os.path.abspath(final_output_path) != os.path.abspath(decompressed_source_file_path):
+                shutil.move(decompressed_source_file_path, final_output_path)
+                print(f"File moved to: {final_output_path}")
+            else:
+                print(f"File available at: {final_output_path}")
+
+        print("\nScript finished.")
+        sys.exit(0)
     else:
         perform_filter = 'Y'
 
@@ -691,20 +712,30 @@ if __name__ == "__main__":
     )
     output_file_path = os.path.join(os.getcwd(), filtered_output_filename)
 
+    # --- CRITICAL SAFEGUARD: Prevent overwriting source file ---
+    if os.path.abspath(output_file_path) == os.path.abspath(decompressed_source_file_path):
+        print("Warning: Output filename matches source filename. Prepending 'Filtered_' to prevent data loss.")
+        dirname, basename = os.path.split(output_file_path)
+        output_file_path = os.path.join(dirname, "Filtered_" + basename)
+    
     print(f"\n--- Starting Processing ---")
     if perform_filter == 'Y':
         print(f"Filtering content...")
     
     records_exported_count = 0
+    chunks_completed = 0
     start_time = time.time()
     
     NUM_PARALLEL_PROCESSORS = os.cpu_count() if os.cpu_count() else 4
-    print(f"Using {NUM_PARALLEL_PROCESSORS} parallel processors.")
 
     try:
         with open(output_file_path, 'w', encoding='utf-8') as outfile:
-            # OPTIMIZATION: Pass CPU count as min_chunks, but allow more chunks if file is large
+            # 1. Get the chunks (Optimized for 64MB targets)
             chunks = get_file_chunks(decompressed_source_file_path, NUM_PARALLEL_PROCESSORS)
+            total_chunks = len(chunks)
+            
+            # 2. Update Feedback: Show the user we are using safe chunking
+            print(f"Using {NUM_PARALLEL_PROCESSORS} parallel processors to process {total_chunks} data chunks (Optimized for Memory Safety).")
             
             with multiprocessing.Pool(processes=NUM_PARALLEL_PROCESSORS) as pool:
                 results_iterator = pool.imap_unordered(
@@ -713,16 +744,19 @@ if __name__ == "__main__":
                 )
                 
                 for matching_lines_in_chunk in results_iterator:
+                    chunks_completed += 1
                     try: 
+                        # Write raw strings directly (Memory Efficient)
                         for line in matching_lines_in_chunk:
-                            # OPTIMIZATION: Write the string directly, no json.dumps() needed
                             outfile.write(line + '\n')
                             records_exported_count += 1
                         
-                        if records_exported_count % 1000 == 0:
+                        # 3. Update Feedback: Show Chunk Progress + Record Count
+                        if chunks_completed % 5 == 0 or records_exported_count % 1000 == 0:
                             elapsed_time = time.time() - start_time
                             records_per_second = records_exported_count / elapsed_time if elapsed_time > 0 else 0
-                            print(f"  Exported {records_exported_count} records ({records_per_second:.2f} records/s)")
+                            progress_pct = (chunks_completed / total_chunks) * 100
+                            print(f"  Progress: {progress_pct:.1f}% ({chunks_completed}/{total_chunks} chunks) | Exported: {records_exported_count} records ({records_per_second:.2f} rec/s)")
 
                     except Exception as exc:
                         print(f"Error processing chunk: {exc}", file=sys.stderr)
@@ -736,3 +770,4 @@ if __name__ == "__main__":
     print("\nScript finished.")
     total_elapsed_seconds = time.time() - script_start_time
     print(f"\nTotal execution time: {int(total_elapsed_seconds // 60)} Minutes {int(total_elapsed_seconds % 60)} Seconds")
+    sys.exit(0)
