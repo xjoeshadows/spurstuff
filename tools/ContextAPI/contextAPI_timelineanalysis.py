@@ -18,26 +18,22 @@ MAX_THREADS = 10
 def get_nested_value(data: Any, key_path: str) -> Any:
     """
     Retrieves a value from a nested structure using dot notation (e.g., 'tunnels.operator').
-    Now supports traversing lists by collecting values from all items in the list.
+    Supports traversing lists by collecting values from all items.
     """
     keys = key_path.split('.')
     current = data
     
     for k in keys:
         if isinstance(current, dict):
-            # Standard dictionary traversal
             if k in current:
                 current = current[k]
             else:
                 return None
         elif isinstance(current, list):
-            # List traversal: Look for key 'k' in every item of the list
-            # and flatten the results into a new list.
             next_values = []
             for item in current:
                 if isinstance(item, dict) and k in item:
                     val = item[k]
-                    # If the value itself is a list (like tunnels.entries), flatten it
                     if isinstance(val, list):
                         next_values.extend(val)
                     else:
@@ -47,7 +43,6 @@ def get_nested_value(data: Any, key_path: str) -> Any:
                 return None
             current = next_values
         else:
-            # We hit a scalar (string/int) but still have keys to traverse -> Path invalid
             return None
             
     return current
@@ -65,8 +60,6 @@ def check_match(actual_value: Any, target_value: Any) -> bool:
     """Checks equality or list membership for search."""
     if actual_value is None:
         return False
-    # If the actual value retrieved is a list (because we collected multiple values
-    # or the data itself is a list), check if our target is IN that list.
     if isinstance(actual_value, list):
         return target_value in actual_value
     return actual_value == target_value
@@ -248,8 +241,13 @@ def fetch_ip_data(ip, date_list, token):
     """Fetches current and historical data for a single IP using Parallel Requests."""
     print(f"\n--- Fetching data for IP: **{ip}** ---")
     print(f"    (Launching {MAX_THREADS} parallel threads...)")
+    
     results = {}
     today_dt = datetime.now().strftime("%Y%m%d")
+    
+    # Progress tracking variables
+    total_dates = len(date_list)
+    completed_dates = 0
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
         future_to_date = {
@@ -261,13 +259,17 @@ def fetch_ip_data(ip, date_list, token):
             dt, data = future.result()
             
             if data == "401":
-                print("  -> ERROR: 401 Unauthorized. Check your Spur Token.")
+                print("\n  -> ERROR: 401 Unauthorized. Check your Spur Token.")
                 exit(1)
             
             if data:
                 results[dt] = data
+            
+            # Update progress bar in-place
+            completed_dates += 1
+            print(f"\r    ⏳ Progress: [{completed_dates}/{total_dates}] dates fetched...", end="", flush=True)
 
-    print(f"    (Data fetched for {len(results)}/{len(date_list)} dates)")
+    print() # Print a newline to clear the progress bar line
     sorted_results = {k: results[k] for k in sorted(results.keys())}
     return sorted_results
 
