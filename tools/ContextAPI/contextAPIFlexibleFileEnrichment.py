@@ -30,11 +30,15 @@ HTTP.mount("http://", ADAPTER)
 
 # --- Functions ---
 def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo):
+    """
+    Returns a tuple: (success_boolean, data_dictionary)
+    """
     ip_address = row_data.get('IP')
     timestamp = row_data.get('Timestamp') if perform_historic_lookup else None
 
+    # Basic validation before network call
     if not ip_address or str(ip_address).lower() == 'nan':
-        return None
+        return (False, {**row_data, 'Error_Reason': 'Missing or Invalid IP'})
 
     url = f"{api_url_base}{ip_address}"
     query_params = []
@@ -53,10 +57,11 @@ def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo):
         response = HTTP.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         json_response = response.json()
-        return {**row_data, **json_response}
+        return (True, {**row_data, **json_response})
     except Exception as e:
-        print(f"Error enriching {ip_address}: {e}", file=sys.stderr)
-        return None
+        # Return failure status and original data with error appended
+        row_data['Error_Reason'] = str(e)
+        return (False, row_data)
 
 def find_and_map_columns(df):
     original_columns = df.columns
@@ -90,17 +95,23 @@ def process_chunk(df_chunk, ip_col, ts_col, perform_historic_lookup):
                 # 1. Try Epoch conversion
                 try:
                     epoch_val = float(val)
-                    if epoch_val > 100000000:
+                    if epoch_val > 100000000: 
                         dt_obj = datetime.fromtimestamp(epoch_val)
                         formatted_timestamp = dt_obj.strftime('%Y%m%d')
                 except (ValueError, OverflowError):
-                    # 2. Try Standard String Formats
+                    pass 
+
+                # 2. If Epoch failed, try String Formats
+                if formatted_timestamp is None:
                     ts_str = str(val).strip()
+                    if ts_str.endswith('.0'):
+                        ts_str = ts_str[:-2]
+
                     formats = [
+                        '%Y%m%d',
                         '%a, %b %d, %Y %I:%M %p %Z',
                         '%m/%d/%Y',
-                        '%m/%d/%Y %H:%M',
-                        '%Y%m%d'
+                        '%m/%d/%Y %H:%M'
                     ]
                     for fmt in formats:
                         try:
@@ -110,8 +121,8 @@ def process_chunk(df_chunk, ip_col, ts_col, perform_historic_lookup):
                         except ValueError:
                             continue
                     
+                    # 3. Try ISO as last resort
                     if not formatted_timestamp:
-                        # 3. Try ISO as last resort
                         try:
                             dt_obj = datetime.fromisoformat(ts_str.replace('Z', ''))
                             formatted_timestamp = dt_obj.strftime('%Y%m%d')
@@ -122,7 +133,6 @@ def process_chunk(df_chunk, ip_col, ts_col, perform_historic_lookup):
             if not perform_historic_lookup:
                 row_dict.pop('Timestamp', None)
 
-        # Sanitize any existing pandas Timestamps to strings
         for key, value in row_dict.items():
             if isinstance(value, pd.Timestamp):
                 row_dict[key] = str(value)
@@ -130,20 +140,27 @@ def process_chunk(df_chunk, ip_col, ts_col, perform_historic_lookup):
         all_rows_data.append(row_dict)
     return all_rows_data
 
-def write_to_json_stream(results_iterator, output_path, total_processed_count_ref, start_time):
+def write_to_json_stream(results_iterator, output_path, stats_ref, failed_records_list, start_time):
     last_update_time = time.time()
     try:
         with open(output_path, 'a', encoding='utf-8') as outfile:
-            for result in results_iterator:
-                if result:
-                    outfile.write(json.dumps(result, ensure_ascii=False) + '\n')
-                    total_processed_count_ref[0] += 1
+            for success, result_data in results_iterator:
+                if success:
+                    # Write successful enrichments to file
+                    outfile.write(json.dumps(result_data, ensure_ascii=False) + '\n')
+                    stats_ref['success'] += 1
+                else:
+                    # Track failures in memory
+                    stats_ref['failed'] += 1
+                    failed_records_list.append(result_data)
+                
+                stats_ref['processed'] += 1
                 
                 current_time = time.time()
                 if current_time - last_update_time >= 5:
                     elapsed = current_time - start_time
-                    rps = total_processed_count_ref[0] / elapsed if elapsed > 0 else 0
-                    print(f"  Processed {total_processed_count_ref[0]} records ({rps:.2f} r/s) - {time.strftime('%H:%M:%S', time.gmtime(elapsed))} elapsed")
+                    rps = stats_ref['processed'] / elapsed if elapsed > 0 else 0
+                    print(f"  Processed {stats_ref['processed']} ({stats_ref['success']} ok, {stats_ref['failed']} fail) - {rps:.2f} r/s")
                     last_update_time = current_time
     except Exception as e:
         print(f"Error writing to file: {e}", file=sys.stderr)
@@ -166,9 +183,9 @@ if __name__ == "__main__":
     if input_file_path is None:
         print("\n--- Input File Required ---")
         print("Accepted Timestamp Formats:")
+        print("  - YYYYMMDD (e.g., 20250314)")
         print("  - Epoch (e.g., 1766060380)")
         print("  - M/D/YYYY (e.g., 8/15/2025)")
-        print("  - Day, Mon DD, YYYY HH:MM PM/AM TZ (e.g., Wed, Sep 10, 2025 10:29 PM UTC)")
         print("  - ISO 8601 (e.g., 2025-08-15T00:00:00.000Z)")
         print("-" * 70)
 
@@ -229,7 +246,9 @@ if __name__ == "__main__":
 
     # --- Main Loop ---
     total_ips = 0
-    total_processed = [0]
+    stats = {'processed': 0, 'success': 0, 'failed': 0}
+    failed_records = []
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         for chunk in reader:
             chunk.columns = chunk.columns.str.lower().str.strip()
@@ -237,9 +256,32 @@ if __name__ == "__main__":
             chunk_data = process_chunk(chunk, ip_col, ts_col, perform_historic_lookup)
             valid = [r for r in chunk_data if r.get('IP') and str(r['IP']).lower() != 'nan']
             
+            # Map returns tuple (success, data)
             results = executor.map(lambda r: enrich_ip(r, api_token, perform_historic_lookup, use_maxmind_geo), valid)
-            write_to_json_stream(results, output_file_path, total_processed, start_main_time)
+            write_to_json_stream(results, output_file_path, stats, failed_records, start_main_time)
             
-    print(f"\nAll enrichment tasks completed.")
-    print(f"Total IPs: {total_ips} | Saved to: {output_file_path}")
-    print(f"Total runtime: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start_main_time))}")
+    # --- Final Summary & Export Logic ---
+    print("\n" + "="*50)
+    print("COMPLETED".center(50))
+    print("="*50)
+    print(f"Total IPs Processed:    {stats['processed']}")
+    print(f"Successfully Enriched:  {stats['success']}")
+    print(f"Failed Lookups:         {stats['failed']}")
+    print("-" * 50)
+    print(f"Successful records saved to:\n  -> {output_file_path}")
+
+    if stats['failed'] > 0:
+        failed_filename = f"{input_file_name_without_ext}_NoEnrichmentData.json"
+        failed_path = os.path.join(output_dir, failed_filename)
+        
+        save_fail = input(f"\nWould you like to export the {stats['failed']} failed records to '{failed_filename}'? (y/n): ").strip().lower()
+        if save_fail in ['y', 'yes']:
+            try:
+                with open(failed_path, 'w', encoding='utf-8') as f:
+                    for rec in failed_records:
+                        f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+                print(f"Failed records saved to:\n  -> {failed_path}")
+            except Exception as e:
+                print(f"Error saving failed records: {e}")
+
+    print(f"\nTotal runtime: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start_main_time))}")
