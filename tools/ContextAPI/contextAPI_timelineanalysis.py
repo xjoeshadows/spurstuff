@@ -4,6 +4,8 @@ import os
 import argparse
 import json
 import concurrent.futures
+import re
+import sys
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple, Union
 
@@ -165,24 +167,52 @@ def get_spur_token():
     return token
 
 def load_ips(ip_file=None):
-    """Loads IP addresses from a file or prompts the user."""
-    ips = []
+    """
+    Loads IP addresses from a file or prompts the user.
+    Supports multiline input (copy-pasting a list) and comma/space separation.
+    """
+    raw_text = ""
+    
     if ip_file:
         try:
             with open(ip_file, 'r') as f:
-                ips = [line.strip() for line in f if line.strip()]
+                raw_text = f.read()
         except FileNotFoundError:
             print(f"Error: Input file '{ip_file}' not found.")
             exit(1)
     else:
-        ip_input = input("Enter one or more IP addresses (separated by commas or spaces): ").strip()
-        ips = [ip.strip() for ip in ip_input.replace(',', ' ').split() if ip.strip()]
+        # Multiline Input Loop
+        print("\nEnter IP addresses below (paste a list, comma separated, or space separated).")
+        print("➡️  **Press ENTER twice (on an empty line) to finish:**")
+        
+        lines = []
+        while True:
+            try:
+                line = input()
+                if line.strip() == "":
+                    break # Stop on empty line
+                lines.append(line)
+            except EOFError:
+                break # Stop on Ctrl+D
+        
+        raw_text = "\n".join(lines)
 
-    if not ips:
+    if not raw_text.strip():
         print("Error: No IP addresses provided. Exiting.")
         exit(1)
 
-    return list(set(ips)) 
+    # Use Regex to split on Commas (,), Newlines (\n), or Spaces (\s)
+    # [,\s]+ matches one or more occurrences of any whitespace or comma
+    tokens = re.split(r'[,\s]+', raw_text)
+    
+    # Filter out empty strings and return unique list
+    unique_ips = list(set(t.strip() for t in tokens if t.strip()))
+    
+    if not unique_ips:
+        print("Error: No valid IP addresses found in input. Exiting.")
+        exit(1)
+
+    return unique_ips
 
 def get_historical_dates():
     """Prompts the user for a historical look-up span and generates YYYYMMDD dates."""
@@ -245,7 +275,6 @@ def fetch_ip_data(ip, date_list, token):
     results = {}
     today_dt = datetime.now().strftime("%Y%m%d")
     
-    # Progress tracking variables
     total_dates = len(date_list)
     completed_dates = 0
     
@@ -265,11 +294,10 @@ def fetch_ip_data(ip, date_list, token):
             if data:
                 results[dt] = data
             
-            # Update progress bar in-place
             completed_dates += 1
             print(f"\r    ⏳ Progress: [{completed_dates}/{total_dates}] dates fetched...", end="", flush=True)
 
-    print() # Print a newline to clear the progress bar line
+    print()
     sorted_results = {k: results[k] for k in sorted(results.keys())}
     return sorted_results
 
