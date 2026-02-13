@@ -108,10 +108,15 @@ def process_chunk(df_chunk, ip_col, ts_col, perform_historic_lookup):
                         ts_str = ts_str[:-2]
 
                     formats = [
-                        '%Y%m%d',
-                        '%a, %b %d, %Y %I:%M %p %Z',
-                        '%m/%d/%Y',
-                        '%m/%d/%Y %H:%M'
+                        '%Y%m%d',                   # 20251022
+                        '%m/%d/%Y',                 # 10/22/2025
+                        '%m/%d/%y',                 # 10/22/25 (Fixed: Added 2-digit year support)
+                        '%Y-%m-%d',                 # 2025-10-22
+                        '%m-%d-%Y',                 # 10-22-2025
+                        '%m/%d/%Y %H:%M',           # 10/22/2025 14:30
+                        '%m/%d/%y %H:%M',           # 10/22/25 14:30
+                        '%Y-%m-%d %H:%M:%S',        # 2025-10-22 14:30:00
+                        '%a, %b %d, %Y %I:%M %p %Z' # API Header format
                     ]
                     for fmt in formats:
                         try:
@@ -186,6 +191,7 @@ if __name__ == "__main__":
         print("  - YYYYMMDD (e.g., 20250314)")
         print("  - Epoch (e.g., 1766060380)")
         print("  - M/D/YYYY (e.g., 8/15/2025)")
+        print("  - M/D/YY   (e.g., 8/15/25)")
         print("  - ISO 8601 (e.g., 2025-08-15T00:00:00.000Z)")
         print("-" * 70)
 
