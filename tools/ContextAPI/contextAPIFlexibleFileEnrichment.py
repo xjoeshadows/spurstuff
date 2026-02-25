@@ -7,23 +7,17 @@ import pandas as pd
 from datetime import datetime
 import concurrent.futures
 from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 import time
 
 # --- Configuration ---
 api_url_base = "https://api.spur.us/v2/context/"
-MAX_WORKERS = 32
+MAX_WORKERS = 38
 CHUNK_SIZE = 10000
 REQUEST_TIMEOUT = 10
+MAX_RETRIES = 8
 
-RETRY_STRATEGY = Retry(
-    total=8,
-    backoff_factor=2,
-    status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["GET"]
-)
-
-ADAPTER = HTTPAdapter(max_retries=RETRY_STRATEGY)
+# We still pool connections for speed, but handle retries manually
+ADAPTER = HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
 HTTP = requests.Session()
 HTTP.mount("https://", ADAPTER)
 HTTP.mount("http://", ADAPTER)
@@ -53,15 +47,50 @@ def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo):
         
     headers = {'TOKEN': api_token}
 
-    try:
-        response = HTTP.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        json_response = response.json()
-        return (True, {**row_data, **json_response})
-    except Exception as e:
-        # Return failure status and original data with error appended
-        row_data['Error_Reason'] = str(e)
-        return (False, row_data)
+    # Custom Retry Loop
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            response = HTTP.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+            
+            # 1. Catch 404 immediately - normal for this API, no retries needed
+            if response.status_code == 404:
+                row_data['Error_Reason'] = "404 Not Found (No Data)"
+                return (False, row_data)
+                
+            # 2. Raise exception for any other bad status code
+            response.raise_for_status()
+            
+            # 3. Success!
+            json_response = response.json()
+            
+            # Announce recovery if we previously backed off
+            if attempt > 0:
+                print(f"  [+] IP {ip_address} successfully enriched after {attempt} retry(s).")
+                
+            return (True, {**row_data, **json_response})
+            
+        except requests.exceptions.RequestException as e:
+            # 4. Check if the error is actually retryable
+            is_retryable = True
+            if hasattr(e, 'response') and e.response is not None:
+                # If the API returned an error, only retry for rate limits or server issues
+                if e.response.status_code not in [429, 500, 502, 503, 504]:
+                    is_retryable = False
+            
+            if is_retryable and attempt < MAX_RETRIES:
+                backoff_time = 2 * (2 ** attempt) # 2s, 4s, 8s, 16s...
+                
+                error_desc = str(e)
+                if hasattr(e, 'response') and e.response is not None:
+                    error_desc = f"HTTP {e.response.status_code}"
+                    
+                print(f"  [!] Error on {ip_address} ({error_desc}). Backing off {backoff_time}s (Attempt {attempt + 1}/{MAX_RETRIES})...")
+                time.sleep(backoff_time)
+            else:
+                # Return failure status and original data with error appended
+                fail_prefix = f"Failed after {MAX_RETRIES} retries" if is_retryable else "Failed (Non-retryable)"
+                row_data['Error_Reason'] = f"{fail_prefix}: {str(e)}"
+                return (False, row_data)
 
 def find_and_map_columns(df):
     original_columns = df.columns
@@ -110,7 +139,7 @@ def process_chunk(df_chunk, ip_col, ts_col, perform_historic_lookup):
                     formats = [
                         '%Y%m%d',                   # 20251022
                         '%m/%d/%Y',                 # 10/22/2025
-                        '%m/%d/%y',                 # 10/22/25 (Fixed: Added 2-digit year support)
+                        '%m/%d/%y',                 # 10/22/25
                         '%Y-%m-%d',                 # 2025-10-22
                         '%m-%d-%Y',                 # 10-22-2025
                         '%m/%d/%Y %H:%M',           # 10/22/2025 14:30
