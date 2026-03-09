@@ -7,7 +7,7 @@ import concurrent.futures
 import re
 import sys
 from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional, Tuple, Union
+from typing import Dict, Any, List, Optional, Tuple
 
 # --- Configuration ---
 CURRENT_CONTEXT_URL = "https://api.spur.us/v2/context/{ip}"
@@ -17,11 +17,19 @@ MAX_THREADS = 10
 
 # --- Helper Functions ---
 
+def flatten_dict(d: Dict[str, Any], parent_key: str = '') -> Dict[str, Any]:
+    """Flattens a nested dictionary into a single level dictionary with dot-notation keys."""
+    items = []
+    for k, v in d.items():
+        new_key = f"{parent_key}.{k}" if parent_key else k
+        if isinstance(v, dict) and v: # Traverse non-empty dicts
+            items.extend(flatten_dict(v, new_key).items())
+        else:
+            items.append((new_key, v))
+    return dict(items)
+
 def get_nested_value(data: Any, key_path: str) -> Any:
-    """
-    Retrieves a value from a nested structure using dot notation (e.g., 'tunnels.operator').
-    Supports traversing lists by collecting values from all items.
-    """
+    """Retrieves a value from a nested structure using dot notation."""
     keys = key_path.split('.')
     current = data
     
@@ -98,7 +106,7 @@ def calculate_list_delta(old_list: List[Any], new_list: List[Any]) -> Tuple[List
 def deep_diff_recursive(old_data: Dict[str, Any], new_data: Dict[str, Any], path: str = "") -> Optional[Dict[str, Any]]:
     """Performs a recursive deep-diff on two dictionaries."""
     changes = {
-        'keys_disappeared': [],
+        'keys_disappeared': {}, 
         'value_changes': {}
     }
     
@@ -113,9 +121,10 @@ def deep_diff_recursive(old_data: Dict[str, Any], new_data: Dict[str, Any], path
             'new_value': new_data[key]
         }
     
-    # 2. Disappeared keys
+    # 2. Disappeared keys 
     for key in old_keys - new_keys:
-        changes['keys_disappeared'].append(f"{path}{key}")
+        current_path = f"{path}{key}"
+        changes['keys_disappeared'][current_path] = old_data[key]
 
     # 3. Value changes and Nested Recursion
     for key in old_keys.intersection(new_keys):
@@ -126,7 +135,7 @@ def deep_diff_recursive(old_data: Dict[str, Any], new_data: Dict[str, Any], path
         if isinstance(old_val, dict) and isinstance(new_val, dict):
             nested_changes = deep_diff_recursive(old_val, new_val, path=f"{current_path}.")
             if nested_changes:
-                changes['keys_disappeared'].extend(nested_changes['keys_disappeared'])
+                changes['keys_disappeared'].update(nested_changes['keys_disappeared'])
                 changes['value_changes'].update(nested_changes['value_changes'])
             continue
 
@@ -167,12 +176,8 @@ def get_spur_token():
     return token
 
 def load_ips(ip_file=None):
-    """
-    Loads IP addresses from a file or prompts the user.
-    Supports multiline input (copy-pasting a list) and comma/space separation.
-    """
+    """Loads IP addresses from a file or prompts the user."""
     raw_text = ""
-    
     if ip_file:
         try:
             with open(ip_file, 'r') as f:
@@ -181,31 +186,24 @@ def load_ips(ip_file=None):
             print(f"Error: Input file '{ip_file}' not found.")
             exit(1)
     else:
-        # Multiline Input Loop
         print("\nEnter IP addresses below (paste a list, comma separated, or space separated).")
         print("➡️  **Press ENTER twice (on an empty line) to finish:**")
-        
         lines = []
         while True:
             try:
                 line = input()
                 if line.strip() == "":
-                    break # Stop on empty line
+                    break 
                 lines.append(line)
             except EOFError:
-                break # Stop on Ctrl+D
-        
+                break 
         raw_text = "\n".join(lines)
 
     if not raw_text.strip():
         print("Error: No IP addresses provided. Exiting.")
         exit(1)
 
-    # Use Regex to split on Commas (,), Newlines (\n), or Spaces (\s)
-    # [,\s]+ matches one or more occurrences of any whitespace or comma
     tokens = re.split(r'[,\s]+', raw_text)
-    
-    # Filter out empty strings and return unique list
     unique_ips = list(set(t.strip() for t in tokens if t.strip()))
     
     if not unique_ips:
@@ -247,7 +245,7 @@ def get_historical_dates():
     return dates
 
 def fetch_single_date(ip, dt, token, today_dt):
-    """Helper function to fetch data for a single date (for threading)."""
+    """Helper function to fetch data for a single date."""
     headers = {"Token": token}
     result = None
     
@@ -274,7 +272,6 @@ def fetch_ip_data(ip, date_list, token):
     
     results = {}
     today_dt = datetime.now().strftime("%Y%m%d")
-    
     total_dates = len(date_list)
     completed_dates = 0
     
@@ -286,11 +283,9 @@ def fetch_ip_data(ip, date_list, token):
         
         for future in concurrent.futures.as_completed(future_to_date):
             dt, data = future.result()
-            
             if data == "401":
                 print("\n  -> ERROR: 401 Unauthorized. Check your Spur Token.")
                 exit(1)
-            
             if data:
                 results[dt] = data
             
@@ -311,7 +306,6 @@ def analyze_timeline(ip_results):
     if not dates:
         return timeline
 
-    # Initial Context
     timeline.append({
         'date': dates[0],
         'type': 'Initial Context',
@@ -327,7 +321,6 @@ def analyze_timeline(ip_results):
             continue
             
         diff = diff_json(prev_data, current_data)
-        
         if diff:
             timeline.append({
                 'date': dates[i],
@@ -391,54 +384,17 @@ def analyze_attribute_presence(ip, ip_results, search_key, search_value):
                 else:
                     print(f"   📅 {fmt_start}  ➡️  {fmt_end}")
 
-def format_change_summary(changes: Dict[str, Any]) -> str:
-    """Creates a concise, single-line summary string for all non-count changes."""
-    summary_parts = []
-    
-    value_changes = changes.get('value_changes', {})
-    
-    for key_path, vals in value_changes.items():
-        if key_path.endswith('.count'):
-            continue 
-            
-        old_val = vals['old_value']
-        new_val = vals['new_value']
-        
-        if old_val is None:
-            new_str = json.dumps(new_val, sort_keys=True, ensure_ascii=False)
-            summary_parts.append(f"➕ ADDED: {key_path} = {new_str}")
-        elif isinstance(old_val, list) and isinstance(new_val, list):
-            added, removed = calculate_list_delta(old_val, new_val)
-            added_str = json.dumps(added, ensure_ascii=False)
-            removed_str = json.dumps(removed, ensure_ascii=False)
-
-            if added and removed:
-                summary_parts.append(f"🔄 MODIFIED: {key_path} | +{added_str} | -{removed_str}")
-            elif added:
-                summary_parts.append(f"🟢 ADDED: {key_path} {added_str}")
-            elif removed:
-                summary_parts.append(f"🔴 REMOVED: {key_path} {removed_str}")
-        else:
-            summary_parts.append(f"🔄 MODIFIED: {key_path}")
-
-    keys_removed = changes.get('keys_disappeared', [])
-    if keys_removed:
-        summary_parts.append(f"➖ REMOVED: {', '.join(keys_removed)}")
-        
-    return ' | '.join(summary_parts) if summary_parts else 'No other changes'
-
 def print_timeline_to_terminal(ip, timeline_analysis):
-    """Prints the analyzed timeline for a single IP as a markdown table."""
-    print(f"\n==============================================")
+    """Prints the analyzed timeline using the Unified Delta design."""
+    print(f"\n=======================================================================================================")
     print(f"🔍 **Timeline Analysis for IP: {ip}**")
-    print(f"==============================================")
+    print(f"=======================================================================================================")
 
     if not timeline_analysis:
         print("No historical data or notable changes observed.")
         return
         
-    table = [["Date", "Client Count", "Trend", "Other Changes Summary"]]
-    table.append(["---", "---", "---", "---"])
+    table = [["Date", "🔄 Modified (Key)", "➕ Added (New Value)", "➖ Removed (Old Value)"]]
     
     for event in timeline_analysis:
         date_str = event['date']
@@ -447,46 +403,94 @@ def print_timeline_to_terminal(ip, timeline_analysis):
         except ValueError:
             formatted_date = date_str
             
-        changes = event.get('changes', {})
-        value_changes = changes.get('value_changes', {})
-        
-        count_display = ""
-        trend_display = ""
-        count_change = value_changes.get('client.count')
-        
         if event['type'] == 'Initial Context':
-            initial_count = event['full_context'].get('client', {}).get('count', 'N/A')
-            count_display = f"Initial ({initial_count})"
-            trend_display = "---"
-        elif count_change:
-            old_count = count_change['old_value']
-            new_count = count_change['new_value']
-            if isinstance(old_count, int) and isinstance(new_count, int):
-                diff = new_count - old_count
-                trend_symbol = "⬆️" if diff > 0 else "⬇️" if diff < 0 else "="
-                trend_display = f"{trend_symbol} ({'+' if diff > 0 else ''}{diff})"
-                count_display = f"{new_count}"
-            else:
-                count_display = f"Changed: {new_count}"
-                trend_display = "MODIFIED"
-        
-        summary = format_change_summary(changes)
-        table.append([formatted_date, count_display, trend_display, summary])
+            full_context = event.get('full_context', {})
+            
+            if not full_context:
+                table.append([formatted_date, "(Baseline) No Data", "", ""])
+                continue
+                
+            # Flatten the initial context JSON to display all baselines
+            flattened_baseline = flatten_dict(full_context)
+            sorted_keys = sorted(flattened_baseline.keys())
+            
+            for i, key in enumerate(sorted_keys):
+                val = flattened_baseline[key]
+                val_str = json.dumps(val, sort_keys=True, ensure_ascii=False) if isinstance(val, (dict, list)) else str(val)
+                date_col = formatted_date if i == 0 else ""
+                table.append([date_col, f"(Baseline) {key}", val_str, ""])
+            continue
 
+        changes = event.get('changes', {})
+        val_changes = changes.get('value_changes', {})
+        keys_removed = changes.get('keys_disappeared', {}) 
+        
+        row_data = [] 
+        
+        # 1. Process value modifications and additions
+        for key, vals in val_changes.items():
+            old_val = vals['old_value']
+            new_val = vals['new_value']
+            
+            added_str = ""
+            removed_str = ""
+            
+            if old_val is None:
+                added_str = json.dumps(new_val, sort_keys=True, ensure_ascii=False)
+                
+            elif isinstance(old_val, list) and isinstance(new_val, list):
+                added, removed = calculate_list_delta(old_val, new_val)
+                if added:
+                    added_str = json.dumps(added, ensure_ascii=False)
+                if removed:
+                    removed_str = json.dumps(removed, ensure_ascii=False)
+                    
+            elif key.endswith('.count') and isinstance(old_val, int) and isinstance(new_val, int):
+                diff = new_val - old_val
+                trend = "⬆️" if diff > 0 else "⬇️"
+                added_str = f"{new_val} ({trend} {diff:+d})"
+                removed_str = str(old_val)
+                
+            else:
+                added_str = json.dumps(new_val, sort_keys=True, ensure_ascii=False) if isinstance(new_val, (dict, list)) else str(new_val)
+                removed_str = json.dumps(old_val, sort_keys=True, ensure_ascii=False) if isinstance(old_val, (dict, list)) else str(old_val)
+                
+            row_data.append((key, added_str, removed_str))
+
+        # 2. Process keys that were removed
+        for key, old_val in keys_removed.items():
+            removed_str = json.dumps(old_val, sort_keys=True, ensure_ascii=False) if isinstance(old_val, (dict, list)) else str(old_val)
+            row_data.append((key, "", removed_str))
+
+        row_data.sort(key=lambda x: x[0])
+
+        # 3. Build the sub-rows for this date
+        for i, (key, add_s, rem_s) in enumerate(row_data):
+            date_col = formatted_date if i == 0 else ""
+            table.append([date_col, key, add_s, rem_s])
+
+    # --- Print Formatted Table ---
     col_widths = [max(len(str(item)) for item in col) for col in zip(*table)]
     
     def format_row(row):
         return "| " + " | ".join(str(item).ljust(col_widths[i]) for i, item in enumerate(row)) + " |"
 
     for i, row in enumerate(table):
+        if i > 1 and row[0] != "":
+            separator = "+-" + "-+-".join("-" * width for width in col_widths) + "-+"
+            print(separator)
+            
         print(format_row(row))
+        
         if i == 0:
             separator = "+-" + "-+-".join("-" * width for width in col_widths) + "-+"
             print(separator)
+            
+    separator = "+-" + "-+-".join("-" * width for width in col_widths) + "-+"
+    print(separator)
 
 def main():
     """Main function to run the script."""
-    
     parser = argparse.ArgumentParser(description="Spur IP Historical Enrichment & Analysis Script.")
     parser.add_argument("ip_file", nargs='?', help="Optional path to a file containing IP addresses (one per line).")
     parser.add_argument("--search-key", help="Specific JSON key to search for (e.g., tunnels.operator)")
@@ -503,7 +507,6 @@ def main():
     date_list = get_historical_dates()
     print(f"✅ Will look up dates from **{date_list[0]}** to **{date_list[-1]}**.")
     
-    # --- Attribute Search Setup ---
     search_key = args.search_key
     search_value = args.search_value
     
