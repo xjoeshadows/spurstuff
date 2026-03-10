@@ -11,7 +11,7 @@ import time
 
 # --- Configuration ---
 api_url_base = "https://api.spur.us/v2/context/"
-MAX_WORKERS = 38
+MAX_WORKERS = 32
 CHUNK_SIZE = 10000
 REQUEST_TIMEOUT = 10
 MAX_RETRIES = 8
@@ -121,47 +121,51 @@ def process_chunk(df_chunk, ip_col, ts_col, perform_historic_lookup):
             formatted_timestamp = None
             
             if pd.notna(val) and str(val).lower() != 'nan':
-                # 1. Try Epoch conversion
-                try:
-                    epoch_val = float(val)
-                    if epoch_val > 100000000: 
-                        dt_obj = datetime.fromtimestamp(epoch_val)
-                        formatted_timestamp = dt_obj.strftime('%Y%m%d')
-                except (ValueError, OverflowError):
-                    pass 
-
-                # 2. If Epoch failed, try String Formats
-                if formatted_timestamp is None:
-                    ts_str = str(val).strip()
-                    if ts_str.endswith('.0'):
-                        ts_str = ts_str[:-2]
-
-                    formats = [
-                        '%Y%m%d',                   # 20251022
-                        '%m/%d/%Y',                 # 10/22/2025
-                        '%m/%d/%y',                 # 10/22/25
-                        '%Y-%m-%d',                 # 2025-10-22
-                        '%m-%d-%Y',                 # 10-22-2025
-                        '%m/%d/%Y %H:%M',           # 10/22/2025 14:30
-                        '%m/%d/%y %H:%M',           # 10/22/25 14:30
-                        '%Y-%m-%d %H:%M:%S',        # 2025-10-22 14:30:00
-                        '%a, %b %d, %Y %I:%M %p %Z' # API Header format
-                    ]
-                    for fmt in formats:
-                        try:
-                            dt_obj = datetime.strptime(ts_str, fmt)
+                # 0. Check if Pandas already parsed it as a datetime object (common in XLSX)
+                if isinstance(val, (pd.Timestamp, datetime)):
+                    formatted_timestamp = val.strftime('%Y%m%d')
+                else:
+                    # 1. Try Epoch conversion
+                    try:
+                        epoch_val = float(val)
+                        if epoch_val > 100000000: 
+                            dt_obj = datetime.fromtimestamp(epoch_val)
                             formatted_timestamp = dt_obj.strftime('%Y%m%d')
-                            break
-                        except ValueError:
-                            continue
-                    
-                    # 3. Try ISO as last resort
-                    if not formatted_timestamp:
-                        try:
-                            dt_obj = datetime.fromisoformat(ts_str.replace('Z', ''))
-                            formatted_timestamp = dt_obj.strftime('%Y%m%d')
-                        except ValueError:
-                            formatted_timestamp = None
+                    except (ValueError, OverflowError, TypeError): 
+                        pass 
+
+                    # 2. If Epoch failed, try String Formats
+                    if formatted_timestamp is None:
+                        ts_str = str(val).strip()
+                        if ts_str.endswith('.0'):
+                            ts_str = ts_str[:-2]
+
+                        formats = [
+                            '%Y%m%d',                   # 20251022
+                            '%m/%d/%Y',                 # 10/22/2025
+                            '%m/%d/%y',                 # 10/22/25
+                            '%Y-%m-%d',                 # 2025-10-22
+                            '%m-%d-%Y',                 # 10-22-2025
+                            '%m/%d/%Y %H:%M',           # 10/22/2025 14:30
+                            '%m/%d/%y %H:%M',           # 10/22/25 14:30
+                            '%Y-%m-%d %H:%M:%S',        # 2025-10-22 14:30:00
+                            '%a, %b %d, %Y %I:%M %p %Z' # API Header format
+                        ]
+                        for fmt in formats:
+                            try:
+                                dt_obj = datetime.strptime(ts_str, fmt)
+                                formatted_timestamp = dt_obj.strftime('%Y%m%d')
+                                break
+                            except ValueError:
+                                continue
+                        
+                        # 3. Try ISO as last resort
+                        if not formatted_timestamp:
+                            try:
+                                dt_obj = datetime.fromisoformat(ts_str.replace('Z', ''))
+                                formatted_timestamp = dt_obj.strftime('%Y%m%d')
+                            except ValueError:
+                                formatted_timestamp = None
 
             row_dict['Timestamp'] = formatted_timestamp
             if not perform_historic_lookup:
