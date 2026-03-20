@@ -376,7 +376,7 @@ if __name__ == "__main__":
             decompressed_source_file_path = provided_file_path
             print(f"Using provided file: {decompressed_source_file_path}")
 
-            match = re.search(r'(\d{8})(\d{6})?(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetricsAll|DCH|AnonymousIPv6|AnonymousResidentialIPv6|AnonymousResidential|AnonymousResidentialRT|IPSummary|SimilarIPs)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
+            match = re.search(r'(\d{8})(\d{6})?(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetricsAll|DCH|AnonymousIPv6|AnonymousResidentialIPv6|AnonymousResidential|AnonymousResidentialRT|IPSummary|SimilarIPs|AIData)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
             if match:
                 current_date_ymd = match.group(1)
                 if match.group(2):
@@ -404,36 +404,116 @@ if __name__ == "__main__":
             break 
 
         elif use_existing_file_input == 'N':
-            feed_options = {
-                "1": {"name": "Anonymous (Latest)", "url": "https://feeds.spur.us/v2/anonymous/latest.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-                "2": {"name": "Anonymous IPv6 (Latest)", "url": "https://feeds.spur.us/v2/anonymous-ipv6/latest.json.gz", "base_feed_name": "AnonymousIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-                "3": {"name": "Anonymous (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
-                "4": {"name": "Anonymous-Residential (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/latest.json.gz", "base_feed_name": "AnonymousResidential", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-                "5": {"name": "Anonymous-Residential IPv6 (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential-ipv6/latest.json.gz", "base_feed_name": "AnonymousResidentialIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-                "6": {"name": "Anonymous-Residential (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/{}/feed.json.gz", "base_feed_name": "AnonymousResidential", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
-                "7": {"name": "Anonymous-Residential Realtime (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/realtime/latest.json.gz", "base_feed_name": "AnonResRT", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-                "8": {"name": "Anonymous-Residential Realtime (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/{}.json.gz", "base_feed_name": "AnonymousResidentialRT", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
-                "9": {"name": "IPGeo (MMDB - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False, "is_json": False},
-                "10": {"name": "IPGeo (JSON - Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.json.gz", "base_feed_name": "IPGeoJSON", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-                "11": {"name": "Data Center Hosting (DCH) (Latest)", "url": "https://feeds.spur.us/v2/dch/latest.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-                "12": {"name": "Service Metrics (Latest)", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-                "13": {"name": "Service Metrics (Historical)", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
-                "14": {"name": "IPSummary (Latest)", "url": "https://feeds.spur.us/v2/ipsummary/latest.json.gz", "base_feed_name": "IPSummary", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-                "15": {"name": "IPSummary (Historical)", "url_template": "https://feeds.spur.us/v2/ipsummary/{}/feed.json.gz", "base_feed_name": "IPSummary", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
-                "16": {"name": "Similar IPs (Latest)", "url": "https://feeds.spur.us/v1/similar-ips/latest.json.gz", "base_feed_name": "SimilarIPs", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+            
+            # --- NEW MENU STRUCTURE ---
+            menu_structure = {
+                "1": {
+                    "category": "AI Data",
+                    "options": {
+                        "1": {"name": "Latest", "url": "https://feeds.spur.us/v2/ai/latest.json.gz", "base_feed_name": "AIData", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                        "2": {"name": "Historical", "url_template": "https://feeds.spur.us/v2/ai/{}/feed.json.gz", "base_feed_name": "AIData", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                    }
+                },
+                "2": {
+                    "category": "Anonymous",
+                    "options": {
+                        "1": {"name": "Latest", "url": "https://feeds.spur.us/v2/anonymous/latest.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                        "2": {"name": "Historical", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                        "3": {"name": "IPv6 (Latest)", "url": "https://feeds.spur.us/v2/anonymous-ipv6/latest.json.gz", "base_feed_name": "AnonymousIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                        "4": {"name": "IPv6 (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-ipv6/{}/feed.json.gz", "base_feed_name": "AnonymousIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                    }
+                },
+                "3": {
+                    "category": "Anonymous+Residential",
+                    "options": {
+                        "1": {"name": "Latest", "url": "https://feeds.spur.us/v2/anonymous-residential/latest.json.gz", "base_feed_name": "AnonymousResidential", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                        "2": {"name": "Historical", "url_template": "https://feeds.spur.us/v2/anonymous-residential/{}/feed.json.gz", "base_feed_name": "AnonymousResidential", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                        "3": {"name": "IPv6 (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential-ipv6/latest.json.gz", "base_feed_name": "AnonymousResidentialIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                        "4": {"name": "IPv6 (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential-ipv6/{}/feed.json.gz", "base_feed_name": "AnonymousResidentialIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                        "5": {"name": "Realtime (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/realtime/latest.json.gz", "base_feed_name": "AnonResRT", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                        "6": {"name": "Realtime (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/{}.json.gz", "base_feed_name": "AnonymousResidentialRT", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                    }
+                },
+                "4": {
+                    "category": "Datacenter Hosting",
+                    "options": {
+                        "1": {"name": "Latest", "url": "https://feeds.spur.us/v2/dch/latest.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                        "2": {"name": "Historical", "url_template": "https://feeds.spur.us/v2/dch/{}/feed.json.gz", "base_feed_name": "DCH", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                    }
+                },
+                "5": {
+                    "category": "IP Geo",
+                    "options": {
+                        "1": {"name": "JSON Format (Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.json.gz", "base_feed_name": "IPGeoJSON", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                        "2": {"name": "JSON Format (Historical)", "url_template": "https://feeds.spur.us/v2/ipgeo/{}/feed.json.gz", "base_feed_name": "IPGeoJSON", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                        "3": {"name": "MMDB Format (Latest)", "url": "https://feeds.spur.us/v2/ipgeo/latest.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False, "is_json": False},
+                        "4": {"name": "MMDB Format (Historical)", "url_template": "https://feeds.spur.us/v2/ipgeo/{}/feed.mmdb", "base_feed_name": "IPGeoMMDB", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": True, "is_json": False},
+                    }
+                },
+                "6": {
+                    "category": "IP Summary",
+                    "options": {
+                        "1": {"name": "Latest", "url": "https://feeds.spur.us/v2/ipsummary/latest.json.gz", "base_feed_name": "IPSummary", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                        "2": {"name": "Historical", "url_template": "https://feeds.spur.us/v2/ipsummary/{}/feed.json.gz", "base_feed_name": "IPSummary", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                    }
+                },
+                "7": {
+                    "category": "Service Metrics",
+                    "options": {
+                        "1": {"name": "Latest", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                        "2": {"name": "Historical", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                    }
+                },
+                "8": {
+                    "category": "Similar IPs",
+                    "options": {
+                        "1": {"name": "Latest", "url": "https://feeds.spur.us/v1/similar-ips/latest.json.gz", "base_feed_name": "SimilarIPs", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                    }
+                }
             }
 
             selected_feed = None
             while selected_feed is None:
-                print("\nPlease select a feed to download:")
-                for key, value in feed_options.items():
-                    print(f"  {key}: {value['name']}")
+                print("\n" + "="*50)
+                print("             SPUR.US FEED DOWNLOADER")
+                print("="*50)
+                print("\nSelect a Feed Category:\n")
                 
-                choice = input("Enter the number corresponding to your choice: ").strip()
-                selected_feed = feed_options.get(choice)
-                if selected_feed is None:
-                    print("Invalid choice.")
+                for key, val in menu_structure.items():
+                    print(f"  {key}. {val['category']}")
+                print("  9. Exit")
+                
+                cat_choice = input("\nEnter category number (1-9): ").strip()
+                
+                if cat_choice == '9':
+                    print("Exiting...")
+                    sys.exit(0)
+                    
+                if cat_choice in menu_structure:
+                    active_category = menu_structure[cat_choice]
+                    
+                    while True:
+                        print(f"\n--- {active_category['category']} Feeds ---\n")
+                        options = active_category['options']
+                        for opt_key, opt_val in options.items():
+                            print(f"  {opt_key}. {opt_val['name']}")
+                        
+                        go_back_key = str(len(options) + 1)
+                        print(f"  {go_back_key}. Go Back")
+                        
+                        feed_choice = input(f"\nSelect a feed (1-{go_back_key}): ").strip()
+                        
+                        if feed_choice == go_back_key:
+                            break # Go back to main menu loop
+                        elif feed_choice in options:
+                            selected_feed = options[feed_choice]
+                            break # We have our feed, break out of submenu loop
+                        else:
+                            print("Invalid choice. Please try again.")
+                else:
+                    print("Invalid category choice. Please try again.")
 
+            # Map the selected dictionary item to the expected variables
             api_url = selected_feed.get("url")
             base_feed_name = selected_feed["base_feed_name"]
             needs_decompression = selected_feed["needs_decompression"]
@@ -444,7 +524,7 @@ if __name__ == "__main__":
             if is_historical:
                 date_input_valid = False
                 while not date_input_valid:
-                    historical_date_ymd = input("Enter date (YYYYMMDD): ").strip()
+                    historical_date_ymd = input("\nEnter date (YYYYMMDD): ").strip()
                     if re.fullmatch(r'\d{8}', historical_date_ymd):
                         try:
                             datetime.datetime.strptime(historical_date_ymd, "%Y%m%d")
