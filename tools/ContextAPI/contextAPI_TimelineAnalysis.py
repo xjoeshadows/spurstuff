@@ -6,6 +6,7 @@ import json
 import concurrent.futures
 import re
 import sys
+import textwrap
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -14,6 +15,9 @@ CURRENT_CONTEXT_URL = "https://api.spur.us/v2/context/{ip}"
 HISTORIC_CONTEXT_URL = "https://api.spur.us/v2/context/{ip}?dt={date}"
 OUTPUT_FILENAME = "spur_ip_analysis_timeline.jsonl"
 MAX_THREADS = 10 
+# Define max widths for columns to prevent terminal blowout
+MAX_KEY_WIDTH = 25
+MAX_VAL_WIDTH = 45 
 
 # --- Helper Functions ---
 
@@ -54,7 +58,7 @@ def parse_user_value(val: str) -> Any:
 
 def check_match(actual_value: Any, target_value: Any) -> bool:
     if actual_value is None: return False
-    if target_value is None: return True # Key-only search
+    if target_value is None: return True
     if isinstance(actual_value, list): return target_value in actual_value
     return str(actual_value) == str(target_value)
 
@@ -86,16 +90,14 @@ def deep_diff_recursive(old_data: Dict[str, Any], new_data: Dict[str, Any], path
             changes['value_changes'][curr_path] = {'old_value': old_val, 'new_value': new_val}
     return changes if (changes['keys_disappeared'] or changes['value_changes']) else None
 
-# --- Restored Workflow Functions ---
+# --- Workflow Functions ---
 
 def get_spur_token():
     token = os.environ.get("TOKEN")
     if not token:
         print("Spur Token not found in environment variable 'TOKEN'.")
         token = input("Please enter your Spur Token: ").strip()
-        if not token:
-            print("Error: Spur Token is required. Exiting.")
-            sys.exit(1)
+        if not token: sys.exit(1)
     return token
 
 def load_ips(ip_file=None):
@@ -103,12 +105,9 @@ def load_ips(ip_file=None):
     if ip_file:
         try:
             with open(ip_file, 'r') as f: raw_text = f.read()
-        except FileNotFoundError:
-            print(f"Error: Input file '{ip_file}' not found.")
-            sys.exit(1)
+        except FileNotFoundError: sys.exit(1)
     else:
-        print("\nEnter IP addresses below (paste a list, comma separated, or space separated).")
-        print("➡️  **Press ENTER twice (on an empty line) to finish:**")
+        print("\nEnter IPs (Paste list). Press ENTER twice to finish:")
         lines = []
         while True:
             try:
@@ -117,33 +116,22 @@ def load_ips(ip_file=None):
                 lines.append(line)
             except EOFError: break
         raw_text = "\n".join(lines)
-    
     tokens = re.split(r'[,\s]+', raw_text)
-    unique_ips = list(set(t.strip() for t in tokens if t.strip()))
-    if not unique_ips:
-        print("Error: No valid IP addresses found. Exiting.")
-        sys.exit(1)
-    return unique_ips
+    return list(set(t.strip() for t in tokens if t.strip()))
 
 def get_historical_dates():
     while True:
-        prompt = "\nEnter historical look-up span (e.g., '30 days', '20260302-20260327'): "
+        prompt = "\nEnter historical span (e.g., '30 days', '20260302-20260327'): "
         span = input(prompt).strip().lower()
         if '-' in span:
             parts = [p.strip() for p in span.split('-')]
             try:
-                start = datetime.strptime(parts[0], "%Y%m%d").date()
-                end = datetime.strptime(parts[1], "%Y%m%d").date()
-                if start > end:
-                    print("Error: Start date cannot be after end date.")
-                    continue
+                start, end = datetime.strptime(parts[0], "%Y%m%d").date(), datetime.strptime(parts[1], "%Y%m%d").date()
                 dates = []
                 while start <= end:
                     dates.append(start.strftime("%Y%m%d")); start += timedelta(days=1)
                 return dates
-            except ValueError:
-                print("Invalid date format. Please use YYYYMMDD-YYYYMMDD.")
-                continue
+            except: continue
         parts = span.split()
         if len(parts) == 2 and parts[0].isdigit():
             num = int(parts[0])
@@ -154,78 +142,110 @@ def get_historical_dates():
             while start <= end:
                 dates.append(start.strftime("%Y%m%d")); start += timedelta(days=1)
             return dates
-        print("Invalid format. Use 'X days', 'X weeks', or 'YYYYMMDD-YYYYMMDD'.")
 
-# --- UI & Table Rendering ---
+# --- Table Wrapping & Printing ---
+
+def wrap_text(text, width):
+    """Utility to wrap text to a specific width while maintaining list/dict readability."""
+    if not text: return [""]
+    # Ensure it's a string
+    text = str(text)
+    return textwrap.wrap(text, width, break_long_words=True, replace_whitespace=False)
 
 def print_timeline_to_terminal(ip, timeline):
     print(f"\n" + "="*105 + f"\n📈 TIMELINE ANALYSIS: {ip}\n" + "="*105)
-    table = [["Date", "🔄 Modified (Key)", "➕ Added (New Value)", "➖ Removed (Old Value)"]]
+    
+    # Headers
+    headers = ["Date", "🔄 Modified (Key)", "➕ Added (New Value)", "➖ Removed (Old Value)"]
+    
+    # We pre-calculate widths but cap them based on our configuration
+    col_widths = [12, MAX_KEY_WIDTH, MAX_VAL_WIDTH, MAX_VAL_WIDTH]
+    
+    def print_sep():
+        print("+-" + "-+-".join("-" * w for w in col_widths) + "-+")
+
+    def print_row(cells):
+        # Every cell in 'cells' might be a list of wrapped strings
+        wrapped_cells = [wrap_text(cells[0], col_widths[0]),
+                         wrap_text(cells[1], col_widths[1]),
+                         wrap_text(cells[2], col_widths[2]),
+                         wrap_text(cells[3], col_widths[3])]
+        
+        # Determine how many lines this specific row needs
+        num_lines = max(len(c) for c in wrapped_cells)
+        
+        for i in range(num_lines):
+            line = []
+            for j in range(4):
+                val = wrapped_cells[j][i] if i < len(wrapped_cells[j]) else ""
+                line.append(val.ljust(col_widths[j]))
+            print("| " + " | ".join(line) + " |")
+
+    print_sep()
+    print_row(headers)
+    print_sep()
+
     for event in timeline:
         dt = event['date']
         f_dt = datetime.strptime(dt, "%Y%m%d").strftime("%Y-%m-%d")
+        
         if event['type'] == 'Initial Context':
             base = flatten_dict(event.get('full_context', {}))
             for i, k in enumerate(sorted(base.keys())):
                 v = json.dumps(base[k], ensure_ascii=False) if isinstance(base[k], (dict, list)) else str(base[k])
-                table.append([f_dt if i == 0 else "", f"(Baseline) {k}", v, ""])
+                print_row([f_dt if i == 0 else "", f"(Baseline) {k}", v, ""])
+            print_sep()
             continue
-        rows = []
+
         ch = event.get('changes', {})
-        for k, v in ch.get('value_changes', {}).items():
+        val_changes = ch.get('value_changes', {})
+        keys_rem = ch.get('keys_disappeared', {})
+        
+        entries = []
+        for k, v in val_changes.items():
             old, new = v['old_value'], v['new_value']
-            if old is None: rows.append((k, json.dumps(new, ensure_ascii=False), ""))
-            elif k.endswith('.count'): rows.append((k, f"{new} ({'⬆️' if new > old else '⬇️'} {new-old:+d})", str(old)))
-            else: rows.append((k, json.dumps(new, ensure_ascii=False), json.dumps(old, ensure_ascii=False)))
-        for k, v in ch.get('keys_disappeared', {}).items():
-            rows.append((k, "", json.dumps(v, ensure_ascii=False)))
-        for i, (k, a, r) in enumerate(sorted(rows)):
-            table.append([f_dt if i == 0 else "", k, a, r])
-            
-    widths = [max(len(str(x)) for x in col) for col in zip(*table)]
-    sep = "+-" + "-+-".join("-" * w for w in widths) + "-+"
-    for i, row in enumerate(table):
-        if i > 1 and row[0] != "": print(sep)
-        print("| " + " | ".join(str(row[j]).ljust(widths[j]) for j in range(4)) + " |")
-        if i == 0: print(sep)
-    print(sep)
+            if old is None: 
+                entries.append((k, json.dumps(new, ensure_ascii=False), ""))
+            elif k.endswith('.count'):
+                entries.append((k, f"{new} ({'⬆️' if new > old else '⬇️'} {new-old:+d})", str(old)))
+            else:
+                entries.append((k, json.dumps(new, ensure_ascii=False), json.dumps(old, ensure_ascii=False)))
+        
+        for k, v in keys_rem.items():
+            entries.append((k, "", json.dumps(v, ensure_ascii=False)))
+
+        entries.sort(key=lambda x: x[0])
+        for i, (k, a, r) in enumerate(entries):
+            print_row([f_dt if i == 0 else "", k, a, r])
+        print_sep()
 
 def main():
     parser = argparse.ArgumentParser(); parser.add_argument("ip_file", nargs='?'); args = parser.parse_args()
-    print("✨ Starting Spur IP Historical Analysis Script...")
     token = get_spur_token()
     ips = load_ips(args.ip_file)
     dates = get_historical_dates()
     
     search_key, search_value = None, None
-    ask_search = input("\nWould you like to search for a specific attribute history? (y/n): ").strip().lower()
-    if ask_search.startswith('y'):
-        search_key = input("Enter the Key to search (e.g., client.proxies): ").strip()
-        search_value = parse_user_value(input("Enter the Value to match (Leave blank for ANY): ").strip())
+    if input("\nSearch attribute? (y/n): ").lower().startswith('y'):
+        search_key = input("Key (e.g., client.proxies): ").strip()
+        search_value = parse_user_value(input("Value (Leave blank for ANY): ").strip())
 
-    print(f"\n🚀 Processing {len(ips)} IPs over {len(dates)} dates...")
     with open(OUTPUT_FILENAME, 'w') as f:
         for ip in ips:
-            if not ip.strip(): continue
-            # Logic for Parallel Fetching (Restored)
-            results, today = {}, datetime.now().strftime("%Y%m%d")
             print(f"\n--- Fetching Data: {ip} ---")
+            results, today = {}, datetime.now().strftime("%Y%m%d")
             with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as exe:
-                futures = {exe.submit(requests.get, (CURRENT_CONTEXT_URL.format(ip=ip) if dt == today else HISTORIC_CONTEXT_URL.format(ip=ip, date=dt)), headers={"Token": token}): dt for dt in dates}
-                for i, fut in enumerate(concurrent.futures.as_completed(futures), 1):
-                    dt = futures[fut]
+                futs = {exe.submit(requests.get, (CURRENT_CONTEXT_URL.format(ip=ip) if dt == today else HISTORIC_CONTEXT_URL.format(ip=ip, date=dt)), headers={"Token": token}): dt for dt in dates}
+                for i, fut in enumerate(concurrent.futures.as_completed(futs), 1):
+                    dt = futs[fut]
                     try:
-                        resp = fut.result()
-                        if resp.status_code == 200: results[dt] = resp.json()
+                        r = fut.result()
+                        if r.status_code == 200: results[dt] = r.json()
                     except: pass
                     print(f"\r    ⏳ Progress: [{i}/{len(dates)}] dates fetched...", end="", flush=True)
             print()
             
-            if not results:
-                print(f"⚠️  No data found for {ip} in the specified timeframe.")
-                continue
-            
-            # Analyze Timeline
+            if not results: continue
             sorted_dates = sorted(results.keys())
             tl = [{'date': sorted_dates[0], 'type': 'Initial Context', 'full_context': results[sorted_dates[0]]}]
             for i in range(1, len(sorted_dates)):
@@ -234,17 +254,15 @@ def main():
             
             print_timeline_to_terminal(ip, tl)
             if search_key:
-                from __main__ import analyze_attribute_presence # Local call
+                # Local call to keep it clean
                 analyze_attribute_presence(ip, results, search_key, search_value)
             
             for e in tl: f.write(json.dumps({'ip': ip, **e}) + '\n')
-    
-    print(f"\n✨ Analysis complete. Events exported to {OUTPUT_FILENAME}")
 
 def analyze_attribute_presence(ip, ip_results, search_key, search_value):
     dates = sorted(list(ip_results.keys()))
     intervals, current_start, is_present = [], None, False
-    print(f"\n🔎 SEARCH [{ip}]: `{search_key}` | Value: `{search_value if search_value else 'ANY'}`")
+    print(f"\n🔎 SEARCH: `{search_key}` | Value: `{search_value if search_value else 'ANY'}`")
     print("-" * 60)
     for dt in dates:
         match = check_match(get_nested_value(ip_results[dt], search_key), search_value)
