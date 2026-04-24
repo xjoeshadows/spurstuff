@@ -61,7 +61,7 @@ def check_match(actual_value: Any, target_value: Any) -> bool:
     if isinstance(actual_value, list): return target_value in actual_value
     return str(actual_value) == str(target_value)
 
-# --- Normalization & Delta Calculation (FIXED) ---
+# --- Normalization & Delta Calculation ---
 
 def normalize_for_comparison(item: Any) -> Any:
     """Recursively sorts all lists/arrays to make comparisons order-agnostic."""
@@ -72,7 +72,6 @@ def normalize_for_comparison(item: Any) -> Any:
         try:
             return sorted(norm_list)
         except TypeError:
-            # If list contains mixed types (e.g. dicts and strings), sort by JSON string
             return sorted(norm_list, key=lambda x: json.dumps(x, sort_keys=True))
     return item
 
@@ -80,7 +79,6 @@ def compare_unordered_lists(list1: List[Any], list2: List[Any]) -> bool:
     return normalize_for_comparison(list1) == normalize_for_comparison(list2)
 
 def calculate_list_delta(old_list: List[Any], new_list: List[Any]) -> Tuple[List[Any], List[Any]]:
-    """Accurately calculates items added and removed, ignoring order."""
     def make_h(i): return json.dumps(normalize_for_comparison(i), sort_keys=True)
     
     old_set = set(make_h(i) for i in old_list)
@@ -110,7 +108,6 @@ def deep_diff_recursive(old_data: Dict[str, Any], new_data: Dict[str, Any], path
                 changes['value_changes'].update(nested['value_changes'])
             continue
             
-        # Ignore order changes in lists
         if isinstance(old_val, list) and isinstance(new_val, list):
             if not compare_unordered_lists(old_val, new_val):
                 changes['value_changes'][curr_path] = {'old_value': old_val, 'new_value': new_val}
@@ -211,6 +208,7 @@ def print_timeline_to_terminal(ip, timeline):
         dt = event['date']
         f_dt = datetime.strptime(dt, "%Y%m%d").strftime("%Y-%m-%d")
         
+        # 1. Baseline Context
         if event['type'] == 'Initial Context':
             base = flatten_dict(event.get('full_context', {}))
             for i, k in enumerate(sorted(base.keys())):
@@ -218,7 +216,17 @@ def print_timeline_to_terminal(ip, timeline):
                 print_row([f_dt if i == 0 else "", f"(Baseline) {k}", v, ""])
             print_sep()
             continue
+            
+        # 2. Final Context
+        if event['type'] == 'Final Context':
+            base = flatten_dict(event.get('full_context', {}))
+            for i, k in enumerate(sorted(base.keys())):
+                v = json.dumps(base[k], ensure_ascii=False) if isinstance(base[k], (dict, list)) else str(base[k])
+                print_row([f_dt if i == 0 else "", f"(Final) {k}", v, ""])
+            print_sep()
+            continue
 
+        # 3. Change Events
         ch = event.get('changes', {})
         val_changes = ch.get('value_changes', {})
         keys_rem = ch.get('keys_disappeared', {})
@@ -227,7 +235,6 @@ def print_timeline_to_terminal(ip, timeline):
         for k, v in val_changes.items():
             old, new = v['old_value'], v['new_value']
             
-            # --- RESTORED DELTA LOGIC HERE ---
             if old is None: 
                 entries.append((k, json.dumps(new, ensure_ascii=False), ""))
             elif k.endswith('.count') and isinstance(old, int) and isinstance(new, int):
@@ -277,15 +284,24 @@ def main():
             
             if not results: continue
             sorted_dates = sorted(results.keys())
+            
+            # Baseline
             tl = [{'date': sorted_dates[0], 'type': 'Initial Context', 'full_context': results[sorted_dates[0]]}]
+            
+            # Changes
             for i in range(1, len(sorted_dates)):
                 diff = deep_diff_recursive(results[sorted_dates[i-1]], results[sorted_dates[i]])
                 if diff: tl.append({'date': sorted_dates[i], 'type': 'Change', 'changes': diff})
+                
+            # Final State (only add if we are looking at more than 1 single date)
+            if len(sorted_dates) > 1:
+                tl.append({'date': sorted_dates[-1], 'type': 'Final Context', 'full_context': results[sorted_dates[-1]]})
             
             print_timeline_to_terminal(ip, tl)
             if search_key:
                 analyze_attribute_presence(ip, results, search_key, search_value)
             
+            # Export all events including Final Context to JSONL
             for e in tl: f.write(json.dumps({'ip': ip, **e}) + '\n')
 
 def analyze_attribute_presence(ip, ip_results, search_key, search_value):
