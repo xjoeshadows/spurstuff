@@ -15,7 +15,6 @@ CURRENT_CONTEXT_URL = "https://api.spur.us/v2/context/{ip}"
 HISTORIC_CONTEXT_URL = "https://api.spur.us/v2/context/{ip}?dt={date}"
 OUTPUT_FILENAME = "spur_ip_analysis_timeline.jsonl"
 MAX_THREADS = 10 
-# Define max widths for columns to prevent terminal blowout
 MAX_KEY_WIDTH = 25
 MAX_VAL_WIDTH = 45 
 
@@ -62,32 +61,64 @@ def check_match(actual_value: Any, target_value: Any) -> bool:
     if isinstance(actual_value, list): return target_value in actual_value
     return str(actual_value) == str(target_value)
 
+# --- Normalization & Delta Calculation (FIXED) ---
+
+def normalize_for_comparison(item: Any) -> Any:
+    """Recursively sorts all lists/arrays to make comparisons order-agnostic."""
+    if isinstance(item, dict):
+        return {k: normalize_for_comparison(v) for k, v in item.items()}
+    elif isinstance(item, list):
+        norm_list = [normalize_for_comparison(i) for i in item]
+        try:
+            return sorted(norm_list)
+        except TypeError:
+            # If list contains mixed types (e.g. dicts and strings), sort by JSON string
+            return sorted(norm_list, key=lambda x: json.dumps(x, sort_keys=True))
+    return item
+
+def compare_unordered_lists(list1: List[Any], list2: List[Any]) -> bool:
+    return normalize_for_comparison(list1) == normalize_for_comparison(list2)
+
 def calculate_list_delta(old_list: List[Any], new_list: List[Any]) -> Tuple[List[Any], List[Any]]:
-    def make_h(i): return json.dumps(i, sort_keys=True) if isinstance(i, (dict, list)) else i
+    """Accurately calculates items added and removed, ignoring order."""
+    def make_h(i): return json.dumps(normalize_for_comparison(i), sort_keys=True)
+    
     old_set = set(make_h(i) for i in old_list)
     new_set = set(make_h(i) for i in new_list)
-    added = sorted([json.loads(i) if isinstance(i, str) and i.startswith(('{', '[')) else i for i in new_set - old_set])
-    removed = sorted([json.loads(i) if isinstance(i, str) and i.startswith(('{', '[')) else i for i in old_set - new_set])
+    
+    added = sorted([json.loads(i) for i in new_set - old_set], key=lambda x: str(x))
+    removed = sorted([json.loads(i) for i in old_set - new_set], key=lambda x: str(x))
     return added, removed
 
 def deep_diff_recursive(old_data: Dict[str, Any], new_data: Dict[str, Any], path: str = "") -> Optional[Dict[str, Any]]:
     changes = {'keys_disappeared': {}, 'value_changes': {}}
     old_keys, new_keys = set(old_data.keys()), set(new_data.keys())
+    
     for key in new_keys - old_keys:
         changes['value_changes'][f"{path}{key}"] = {'old_value': None, 'new_value': new_data[key]}
     for key in old_keys - new_keys:
         changes['keys_disappeared'][f"{path}{key}"] = old_data[key]
+        
     for key in old_keys.intersection(new_keys):
         old_val, new_val = old_data.get(key), new_data.get(key)
         curr_path = f"{path}{key}"
+        
         if isinstance(old_val, dict) and isinstance(new_val, dict):
             nested = deep_diff_recursive(old_val, new_val, path=f"{curr_path}.")
             if nested:
                 changes['keys_disappeared'].update(nested['keys_disappeared'])
                 changes['value_changes'].update(nested['value_changes'])
             continue
+            
+        # Ignore order changes in lists
+        if isinstance(old_val, list) and isinstance(new_val, list):
+            if not compare_unordered_lists(old_val, new_val):
+                changes['value_changes'][curr_path] = {'old_value': old_val, 'new_value': new_val}
+            continue
+
         if old_val != new_val:
             changes['value_changes'][curr_path] = {'old_value': old_val, 'new_value': new_val}
+            
     return changes if (changes['keys_disappeared'] or changes['value_changes']) else None
 
 # --- Workflow Functions ---
@@ -146,34 +177,25 @@ def get_historical_dates():
 # --- Table Wrapping & Printing ---
 
 def wrap_text(text, width):
-    """Utility to wrap text to a specific width while maintaining list/dict readability."""
     if not text: return [""]
-    # Ensure it's a string
     text = str(text)
     return textwrap.wrap(text, width, break_long_words=True, replace_whitespace=False)
 
 def print_timeline_to_terminal(ip, timeline):
     print(f"\n" + "="*105 + f"\n📈 TIMELINE ANALYSIS: {ip}\n" + "="*105)
     
-    # Headers
     headers = ["Date", "🔄 Modified (Key)", "➕ Added (New Value)", "➖ Removed (Old Value)"]
-    
-    # We pre-calculate widths but cap them based on our configuration
     col_widths = [12, MAX_KEY_WIDTH, MAX_VAL_WIDTH, MAX_VAL_WIDTH]
     
     def print_sep():
         print("+-" + "-+-".join("-" * w for w in col_widths) + "-+")
 
     def print_row(cells):
-        # Every cell in 'cells' might be a list of wrapped strings
         wrapped_cells = [wrap_text(cells[0], col_widths[0]),
                          wrap_text(cells[1], col_widths[1]),
                          wrap_text(cells[2], col_widths[2]),
                          wrap_text(cells[3], col_widths[3])]
-        
-        # Determine how many lines this specific row needs
         num_lines = max(len(c) for c in wrapped_cells)
-        
         for i in range(num_lines):
             line = []
             for j in range(4):
@@ -204,12 +226,20 @@ def print_timeline_to_terminal(ip, timeline):
         entries = []
         for k, v in val_changes.items():
             old, new = v['old_value'], v['new_value']
+            
+            # --- RESTORED DELTA LOGIC HERE ---
             if old is None: 
                 entries.append((k, json.dumps(new, ensure_ascii=False), ""))
-            elif k.endswith('.count'):
+            elif k.endswith('.count') and isinstance(old, int) and isinstance(new, int):
                 entries.append((k, f"{new} ({'⬆️' if new > old else '⬇️'} {new-old:+d})", str(old)))
+            elif isinstance(old, list) and isinstance(new, list):
+                added, removed = calculate_list_delta(old, new)
+                add_str = json.dumps(added, ensure_ascii=False) if added else ""
+                rem_str = json.dumps(removed, ensure_ascii=False) if removed else ""
+                entries.append((k, add_str, rem_str))
             else:
-                entries.append((k, json.dumps(new, ensure_ascii=False), json.dumps(old, ensure_ascii=False)))
+                entries.append((k, json.dumps(new, ensure_ascii=False) if isinstance(new, (dict, list)) else str(new), 
+                                   json.dumps(old, ensure_ascii=False) if isinstance(old, (dict, list)) else str(old)))
         
         for k, v in keys_rem.items():
             entries.append((k, "", json.dumps(v, ensure_ascii=False)))
@@ -254,7 +284,6 @@ def main():
             
             print_timeline_to_terminal(ip, tl)
             if search_key:
-                # Local call to keep it clean
                 analyze_attribute_presence(ip, results, search_key, search_value)
             
             for e in tl: f.write(json.dumps({'ip': ip, **e}) + '\n')
