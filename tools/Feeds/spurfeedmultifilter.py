@@ -382,7 +382,7 @@ if __name__ == "__main__":
                 if match.group(2):
                     current_time_hms = match.group(2)
                 base_feed_name = match.group(3)
-                if base_feed_name in ["IPGeoMMDB"]:
+                if base_feed_name in ["IPGeoMMDB", "Anonymous", "AnonymousResidential"] and provided_file_path.lower().endswith('.mmdb'):
                     is_feed_json = False
             else:
                 name_without_ext = os.path.splitext(os.path.basename(provided_file_path))[0]
@@ -414,13 +414,15 @@ if __name__ == "__main__":
                         "2": {"name": "Historical", "url_template": "https://feeds.spur.us/v2/ai/{}/feed.json.gz", "base_feed_name": "AIData", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
                     }
                 },
-                "2": {
+"2": {
                     "category": "Anonymous",
                     "options": {
                         "1": {"name": "Latest", "url": "https://feeds.spur.us/v2/anonymous/latest.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
                         "2": {"name": "Historical", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
                         "3": {"name": "IPv6 (Latest)", "url": "https://feeds.spur.us/v2/anonymous-ipv6/latest.json.gz", "base_feed_name": "AnonymousIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
                         "4": {"name": "IPv6 (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-ipv6/{}/feed.json.gz", "base_feed_name": "AnonymousIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                        "5": {"name": "MMDB (Latest)", "url": "https://feeds.spur.us/v2/anonymous/latest.mmdb", "base_feed_name": "Anonymous", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False, "is_json": False},
+                        "6": {"name": "MMDB (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous/{}/feed.mmdb", "base_feed_name": "Anonymous", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": True, "is_json": False},
                     }
                 },
                 "3": {
@@ -432,6 +434,8 @@ if __name__ == "__main__":
                         "4": {"name": "IPv6 (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential-ipv6/{}/feed.json.gz", "base_feed_name": "AnonymousResidentialIPv6", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
                         "5": {"name": "Realtime (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/realtime/latest.json.gz", "base_feed_name": "AnonResRT", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
                         "6": {"name": "Realtime (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/realtime/{}/{}.json.gz", "base_feed_name": "AnonymousResidentialRT", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                        "7": {"name": "MMDB (Latest)", "url": "https://feeds.spur.us/v2/anonymous-residential/latest.mmdb", "base_feed_name": "AnonymousResidential", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": False, "is_json": False},
+                        "8": {"name": "MMDB (Historical)", "url_template": "https://feeds.spur.us/v2/anonymous-residential/{}/feed.mmdb", "base_feed_name": "AnonymousResidential", "needs_decompression": False, "output_ext": ".mmdb", "is_historical": True, "is_json": False},
                     }
                 },
                 "4": {
