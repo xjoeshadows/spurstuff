@@ -1,6 +1,7 @@
 #### Tools:
 
 - servicemetrics_historicdiff.py: Will download the latest Service Metrics feed, ask the user for an 8 digit date (YYYYMMDD), download that historic Service Metrics feed, and then show the diff in service tags added/removed between them.
+- servicemetrics-listandcount.py: will download the latest service metrics feed from Spur to YYMMDDServiceMetricsAll.json, perform a line count and report the count to the user as well as export a list of the service tags to YYYYMMDDServiceMetricsList.txt for future comparison if desired.
 
 #### Extra:
 
@@ -14,8 +15,6 @@
 - serviceMetrics-findresidentialproxies.py: Will download the latest ServiceMetrics feed and grep for "residential_proxy" to help find interesting res proxy services.
 
 - servicemetrics.py: downloads and outputs a list of current ServiceMetrics tracked by Spur to the terminal
-
-- servicemetrics-listandcount.py: will download the latest service metrics feed from Spur to YYMMDDServiceMetricsAll.json, perform a line count and report the count to the user as well as export a list of the service tags to YYYYMMDDServiceMetricsList.txt for future comparison if desired.
 
 - servicemetricsdiff.py: relies on ServiceMetricsLists created by servicemetrics-listandcount.py or servicemetrics.py >> outputlist.txt. The script will diff them (presumably each list is a different date) and creates an output to the terminal highlighting the added and removed tags between them. Order of the input files matters, e.g. **servicemetricsdiff.py file1.txt file2.txt** where file1.txt is the older ServiceMetricsList file.
 
