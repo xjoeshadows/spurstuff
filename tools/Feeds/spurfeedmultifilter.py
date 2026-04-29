@@ -145,7 +145,7 @@ def process_file_chunk(args_tuple):
                     source_key_found = False
                     
                     # --- Determine Source Value ---
-                    if key_name.startswith('tunnels_'):
+                    if key_name and key_name.startswith('tunnels_'):
                         sub_key = key_name.split('_', 1)[1]
                         relevant_keys = [k for k in flattened_obj.keys() if k.startswith('tunnels_') and k.endswith(f'_{sub_key}')]
                         
