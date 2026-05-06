@@ -8,6 +8,8 @@ from datetime import datetime
 import concurrent.futures
 from requests.adapters import HTTPAdapter
 import time
+import threading
+import signal
 
 # --- Configuration ---
 api_url_base = "https://api.spur.us/v2/context/"
@@ -16,21 +18,37 @@ CHUNK_SIZE = 10000
 REQUEST_TIMEOUT = 10
 MAX_RETRIES = 8
 
-# We still pool connections for speed, but handle retries manually
 ADAPTER = HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
 HTTP = requests.Session()
 HTTP.mount("https://", ADAPTER)
 HTTP.mount("http://", ADAPTER)
 
+# --- Shutdown Event ---
+SHUTDOWN_EVENT = threading.Event()
+
+def sigint_handler(sig, frame):
+    if not SHUTDOWN_EVENT.is_set():
+        print("\n\n" + "="*50)
+        print("[!] CANCELING SCRIPT (Ctrl+C Detected)".center(50))
+        print("="*50)
+        print("  - Stopping new API requests...")
+        print("  - Finishing currently active requests...")
+        print("  - (Press Ctrl+C again to FORCE QUIT immediately)")
+        print("="*50 + "\n")
+        SHUTDOWN_EVENT.set()
+    else:
+        print("\n[!] Force exit triggered. Shutting down...")
+        os._exit(1)
+
 # --- Functions ---
 def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo):
-    """
-    Returns a tuple: (success_boolean, data_dictionary)
-    """
+    if SHUTDOWN_EVENT.is_set():
+        row_data['Error_Reason'] = "Canceled (Graceful Shutdown)"
+        return (False, row_data)
+
     ip_address = row_data.get('IP')
     timestamp = row_data.get('Timestamp') if perform_historic_lookup else None
 
-    # Basic validation before network call
     if not ip_address or str(ip_address).lower() == 'nan':
         return (False, {**row_data, 'Error_Reason': 'Missing or Invalid IP'})
 
@@ -47,50 +65,61 @@ def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo):
         
     headers = {'TOKEN': api_token}
 
-    # Custom Retry Loop
     for attempt in range(MAX_RETRIES + 1):
+        if SHUTDOWN_EVENT.is_set():
+            row_data['Error_Reason'] = "Canceled during retry (Graceful Shutdown)"
+            return (False, row_data)
+
         try:
             response = HTTP.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
             
-            # 1. Catch 404 immediately - normal for this API, no retries needed
             if response.status_code == 404:
                 row_data['Error_Reason'] = "404 Not Found (No Data)"
                 return (False, row_data)
                 
-            # 2. Raise exception for any other bad status code
             response.raise_for_status()
-            
-            # 3. Success!
             json_response = response.json()
             
-            # Announce recovery if we previously backed off
             if attempt > 0:
                 print(f"  [+] IP {ip_address} successfully enriched after {attempt} retry(s).")
                 
             return (True, {**row_data, **json_response})
             
         except requests.exceptions.RequestException as e:
-            # 4. Check if the error is actually retryable
             is_retryable = True
-            if hasattr(e, 'response') and e.response is not None:
-                # If the API returned an error, only retry for rate limits or server issues
+            error_desc = str(e)
+
+            if isinstance(e, requests.exceptions.ConnectionError):
+                error_desc = "Connection Error"
+            elif isinstance(e, requests.exceptions.Timeout):
+                error_desc = "Read Timeout"
+            elif hasattr(e, 'response') and e.response is not None:
                 if e.response.status_code not in [429, 500, 502, 503, 504]:
                     is_retryable = False
+                error_desc = f"HTTP {e.response.status_code}"
             
             if is_retryable and attempt < MAX_RETRIES:
-                backoff_time = 2 * (2 ** attempt) # 2s, 4s, 8s, 16s...
-                
-                error_desc = str(e)
-                if hasattr(e, 'response') and e.response is not None:
-                    error_desc = f"HTTP {e.response.status_code}"
-                    
+                backoff_time = 2 * (2 ** attempt)
                 print(f"  [!] Error on {ip_address} ({error_desc}). Backing off {backoff_time}s (Attempt {attempt + 1}/{MAX_RETRIES})...")
-                time.sleep(backoff_time)
+                
+                for _ in range(backoff_time):
+                    if SHUTDOWN_EVENT.is_set():
+                        break
+                    time.sleep(1)
             else:
-                # Return failure status and original data with error appended
                 fail_prefix = f"Failed after {MAX_RETRIES} retries" if is_retryable else "Failed (Non-retryable)"
-                row_data['Error_Reason'] = f"{fail_prefix}: {str(e)}"
+                row_data['Error_Reason'] = f"{fail_prefix}: {error_desc}"
+                
+                # Explicit final failure log for the console
+                if attempt >= MAX_RETRIES:
+                    print(f"  [-] IP {ip_address} permanently failed after maximum retries.")
+                    
                 return (False, row_data)
+        except Exception as e:
+            # Bulletproof catch-all for bizarre non-network errors
+            row_data['Error_Reason'] = f"Unexpected Error: {str(e)}"
+            print(f"  [-] IP {ip_address} crashed unexpectedly: {str(e)}")
+            return (False, row_data)
 
 def find_and_map_columns(df):
     original_columns = df.columns
@@ -121,11 +150,9 @@ def process_chunk(df_chunk, ip_col, ts_col, perform_historic_lookup):
             formatted_timestamp = None
             
             if pd.notna(val) and str(val).lower() != 'nan':
-                # 0. Check if Pandas already parsed it as a datetime object (common in XLSX)
                 if isinstance(val, (pd.Timestamp, datetime)):
                     formatted_timestamp = val.strftime('%Y%m%d')
                 else:
-                    # 1. Try Epoch conversion
                     try:
                         epoch_val = float(val)
                         if epoch_val > 100000000: 
@@ -134,22 +161,15 @@ def process_chunk(df_chunk, ip_col, ts_col, perform_historic_lookup):
                     except (ValueError, OverflowError, TypeError): 
                         pass 
 
-                    # 2. If Epoch failed, try String Formats
                     if formatted_timestamp is None:
                         ts_str = str(val).strip()
                         if ts_str.endswith('.0'):
                             ts_str = ts_str[:-2]
 
                         formats = [
-                            '%Y%m%d',                   # 20251022
-                            '%m/%d/%Y',                 # 10/22/2025
-                            '%m/%d/%y',                 # 10/22/25
-                            '%Y-%m-%d',                 # 2025-10-22
-                            '%m-%d-%Y',                 # 10-22-2025
-                            '%m/%d/%Y %H:%M',           # 10/22/2025 14:30
-                            '%m/%d/%y %H:%M',           # 10/22/25 14:30
-                            '%Y-%m-%d %H:%M:%S',        # 2025-10-22 14:30:00
-                            '%a, %b %d, %Y %I:%M %p %Z' # API Header format
+                            '%Y%m%d', '%m/%d/%Y', '%m/%d/%y', '%Y-%m-%d', '%m-%d-%Y',
+                            '%m/%d/%Y %H:%M', '%m/%d/%y %H:%M', '%Y-%m-%d %H:%M:%S',
+                            '%a, %b %d, %Y %I:%M %p %Z'
                         ]
                         for fmt in formats:
                             try:
@@ -159,7 +179,6 @@ def process_chunk(df_chunk, ip_col, ts_col, perform_historic_lookup):
                             except ValueError:
                                 continue
                         
-                        # 3. Try ISO as last resort
                         if not formatted_timestamp:
                             try:
                                 dt_obj = datetime.fromisoformat(ts_str.replace('Z', ''))
@@ -178,30 +197,33 @@ def process_chunk(df_chunk, ip_col, ts_col, perform_historic_lookup):
         all_rows_data.append(row_dict)
     return all_rows_data
 
-def write_to_json_stream(results_iterator, output_path, stats_ref, failed_records_list, start_time):
+def write_to_json_stream(results_iterator, output_path, failed_path, stats_ref, start_time):
     last_update_time = time.time()
     try:
-        with open(output_path, 'a', encoding='utf-8') as outfile:
+        # Open both files in append mode simultaneously
+        with open(output_path, 'a', encoding='utf-8') as outfile, \
+             open(failed_path, 'a', encoding='utf-8') as failfile:
+             
             for success, result_data in results_iterator:
                 if success:
-                    # Write successful enrichments to file
                     outfile.write(json.dumps(result_data, ensure_ascii=False) + '\n')
+                    outfile.flush()  # Force write to disk instantly
                     stats_ref['success'] += 1
                 else:
-                    # Track failures in memory
+                    failfile.write(json.dumps(result_data, ensure_ascii=False) + '\n')
+                    failfile.flush() # Force write to disk instantly
                     stats_ref['failed'] += 1
-                    failed_records_list.append(result_data)
                 
                 stats_ref['processed'] += 1
                 
                 current_time = time.time()
-                if current_time - last_update_time >= 5:
+                if current_time - last_update_time >= 5 and not SHUTDOWN_EVENT.is_set():
                     elapsed = current_time - start_time
                     rps = stats_ref['processed'] / elapsed if elapsed > 0 else 0
                     print(f"  Processed {stats_ref['processed']} ({stats_ref['success']} ok, {stats_ref['failed']} fail) - {rps:.2f} r/s")
                     last_update_time = current_time
     except Exception as e:
-        print(f"Error writing to file: {e}", file=sys.stderr)
+        print(f"\nError writing to file: {e}", file=sys.stderr)
         sys.exit(1)
 
 # --- Main Script ---
@@ -220,14 +242,6 @@ if __name__ == "__main__":
     
     if input_file_path is None:
         print("\n--- Input File Required ---")
-        print("Accepted Timestamp Formats:")
-        print("  - YYYYMMDD (e.g., 20250314)")
-        print("  - Epoch (e.g., 1766060380)")
-        print("  - M/D/YYYY (e.g., 8/15/2025)")
-        print("  - M/D/YY   (e.g., 8/15/25)")
-        print("  - ISO 8601 (e.g., 2025-08-15T00:00:00.000Z)")
-        print("-" * 70)
-
         while True:
             file_input = input("Enter the path to your CSV or XLSX file: ").strip()
             if os.path.exists(file_input):
@@ -239,7 +253,6 @@ if __name__ == "__main__":
     input_file_basename = os.path.basename(input_file_path)
     input_file_name_without_ext = os.path.splitext(input_file_basename)[0]
 
-    # --- Initial Read for Detection ---
     print(f"Reading data from {input_file_path}...")
     file_ext = input_file_path.lower().split('.')[-1]
     
@@ -254,39 +267,43 @@ if __name__ == "__main__":
     first_chunk.columns = first_chunk.columns.str.lower().str.strip()
     ip_col, ts_col = find_and_map_columns(first_chunk)
     
-    # --- Configuration Prompts ---
     perform_historic_lookup = False
     if ts_col:
         print("-" * 35)
         lookup_input = input(f"A Timestamp column ('{ts_col}') was detected. Perform historical lookups? (yes/no): ").strip().lower()
         perform_historic_lookup = lookup_input in ['yes', 'y']
-        status = "✅ YES" if perform_historic_lookup else "❌ NO (Timestamp will be removed from output)"
-        print(f"Historical lookups: {status}")
         print("-" * 35)
 
     use_maxmind_geo = False
-    print("-" * 35)
     geo_input = input("Use MaxMind for geolocation (mmgeo=1)? (yes/no): ").strip().lower()
     use_maxmind_geo = geo_input in ['yes', 'y']
-    print(f"MaxMind Geo: {'✅ Enabled' if use_maxmind_geo else '❌ Disabled'}")
     print("-" * 35)
 
-    # --- Filename Logic ---
+    # Output file paths
     if perform_historic_lookup:
         default_out = f"{input_file_name_without_ext}_SpurHistoricEnrichment.json"
     else:
         default_out = f"{input_file_name_without_ext}_SpurEnrichment.json"
 
-    out_input = input(f"Enter output file name, or press Enter for default ({default_out}): ").strip()
+    out_input = input(f"Enter success output file name, or press Enter for default ({default_out}): ").strip()
     output_file_path = os.path.join(output_dir, out_input if out_input else default_out)
+    
+    failed_file_path = os.path.join(output_dir, f"{input_file_name_without_ext}_NoEnrichmentData.json")
 
-    if os.path.exists(output_file_path):
-        open(output_file_path, 'w').close()
+    # Clear files if they already exist
+    if os.path.exists(output_file_path): open(output_file_path, 'w').close()
+    if os.path.exists(failed_file_path): open(failed_file_path, 'w').close()
 
-    # --- Main Loop ---
+    signal.signal(signal.SIGINT, sigint_handler)
+
     total_ips = 0
     stats = {'processed': 0, 'success': 0, 'failed': 0}
-    failed_records = []
+
+    print("\n" + "-"*50)
+    print("💡 TIP: Press Ctrl+Z to PAUSE, type 'fg' to RESUME.")
+    print("💡 TIP: Press Ctrl+C to SAVE & QUIT gracefully.")
+    print(f"💡 TIP: Failures are now streaming live to {os.path.basename(failed_file_path)}")
+    print("-" * 50 + "\n")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         for chunk in reader:
@@ -295,32 +312,21 @@ if __name__ == "__main__":
             chunk_data = process_chunk(chunk, ip_col, ts_col, perform_historic_lookup)
             valid = [r for r in chunk_data if r.get('IP') and str(r['IP']).lower() != 'nan']
             
-            # Map returns tuple (success, data)
             results = executor.map(lambda r: enrich_ip(r, api_token, perform_historic_lookup, use_maxmind_geo), valid)
-            write_to_json_stream(results, output_file_path, stats, failed_records, start_main_time)
+            write_to_json_stream(results, output_file_path, failed_file_path, stats, start_main_time)
             
-    # --- Final Summary & Export Logic ---
+            if SHUTDOWN_EVENT.is_set():
+                break
+            
     print("\n" + "="*50)
-    print("COMPLETED".center(50))
+    print("COMPLETED / SAVED".center(50))
     print("="*50)
     print(f"Total IPs Processed:    {stats['processed']}")
     print(f"Successfully Enriched:  {stats['success']}")
     print(f"Failed Lookups:         {stats['failed']}")
     print("-" * 50)
-    print(f"Successful records saved to:\n  -> {output_file_path}")
-
+    print(f"Successes saved to: {output_file_path}")
     if stats['failed'] > 0:
-        failed_filename = f"{input_file_name_without_ext}_NoEnrichmentData.json"
-        failed_path = os.path.join(output_dir, failed_filename)
-        
-        save_fail = input(f"\nWould you like to export the {stats['failed']} failed records to '{failed_filename}'? (y/n): ").strip().lower()
-        if save_fail in ['y', 'yes']:
-            try:
-                with open(failed_path, 'w', encoding='utf-8') as f:
-                    for rec in failed_records:
-                        f.write(json.dumps(rec, ensure_ascii=False) + '\n')
-                print(f"Failed records saved to:\n  -> {failed_path}")
-            except Exception as e:
-                print(f"Error saving failed records: {e}")
+        print(f"Failures saved to:  {failed_file_path}")
 
     print(f"\nTotal runtime: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start_main_time))}")
