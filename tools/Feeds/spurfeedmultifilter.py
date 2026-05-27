@@ -114,12 +114,14 @@ def process_file_chunk(args_tuple):
     filepath, start_byte, end_byte, filter_criteria, overall_match_type = args_tuple
     
     matching_lines = [] 
+    lines_parsed = 0
     
     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
         f.seek(start_byte)
         
         current_byte = start_byte
         for line in f:
+            lines_parsed += 1
             line_stripped = line.strip()
             current_byte += len(line.encode('utf-8'))
             
@@ -245,7 +247,7 @@ def process_file_chunk(args_tuple):
             
             if current_byte >= end_byte:
                 break
-    return matching_lines
+    return matching_lines, lines_parsed
 
 def download_and_decompress_gz_to_file(url, token, output_path):
     """Downloads and decompresses a .gz file."""
@@ -414,7 +416,7 @@ if __name__ == "__main__":
                         "2": {"name": "Historical", "url_template": "https://feeds.spur.us/v2/ai/{}/feed.json.gz", "base_feed_name": "AIData", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
                     }
                 },
-"2": {
+                "2": {
                     "category": "Anonymous",
                     "options": {
                         "1": {"name": "Latest", "url": "https://feeds.spur.us/v2/anonymous/latest.json.gz", "base_feed_name": "Anonymous", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
@@ -588,8 +590,8 @@ if __name__ == "__main__":
             
             break 
         else:
-            print("Invalid response. Exiting.", file=sys.stderr)
-            sys.exit(1)
+            print("Invalid response. Please enter Y or N.\n", file=sys.stderr)
+            continue
 
     if not decompressed_source_file_path or not os.path.exists(decompressed_source_file_path):
         print(f"Critical Error: File '{decompressed_source_file_path}' not found. Exiting.", file=sys.stderr)
@@ -601,7 +603,8 @@ if __name__ == "__main__":
 
     filter_criteria = []
     
-    perform_initial_filter_choice = input("\nDo you want to filter the data? (Y/N): ").strip().upper()
+    raw_filter_choice = input("\nDo you want to filter the data? (Y/N) [Default: Y]: ").strip().upper()
+    perform_initial_filter_choice = 'N' if raw_filter_choice == 'N' else 'Y'
 
     if perform_initial_filter_choice == 'Y':
         while True:
@@ -808,8 +811,10 @@ if __name__ == "__main__":
         print(f"Filtering content...")
     
     records_exported_count = 0
+    total_records_parsed = 0
     chunks_completed = 0
     start_time = time.time()
+    last_ui_update_time = start_time  # <-- Added a dedicated UI timer
     
     NUM_PARALLEL_PROCESSORS = os.cpu_count() if os.cpu_count() else 4
 
@@ -828,21 +833,24 @@ if __name__ == "__main__":
                     [(decompressed_source_file_path, start, end, filter_criteria, overall_match_type) for start, end in chunks]
                 )
                 
-                for matching_lines_in_chunk in results_iterator:
+                for matching_lines_in_chunk, lines_parsed_in_chunk in results_iterator:
                     chunks_completed += 1
+                    total_records_parsed += lines_parsed_in_chunk
                     try: 
                         # Write raw strings directly (Memory Efficient)
                         for line in matching_lines_in_chunk:
                             outfile.write(line + '\n')
                             records_exported_count += 1
                         
-                        # 3. Update Feedback: Single line update with carriage return
-                        if chunks_completed % 5 == 0 or records_exported_count % 1000 == 0:
-                            elapsed_time = time.time() - start_time
-                            records_per_second = records_exported_count / elapsed_time if elapsed_time > 0 else 0
+                        # 3. TIME-BASED UI THROTTLING (Max 2 updates per second)
+                        current_time = time.time()
+                        if current_time - last_ui_update_time >= 0.5 or chunks_completed == total_chunks:
+                            elapsed_time = current_time - start_time
+                            records_per_second = total_records_parsed / elapsed_time if elapsed_time > 0 else 0
                             progress_pct = (chunks_completed / total_chunks) * 100
-                            sys.stdout.write(f"\r  Progress: {progress_pct:.1f}% ({chunks_completed}/{total_chunks} chunks) | Exported: {records_exported_count} records ({records_per_second:.2f} rec/s)")
+                            sys.stdout.write(f"\r  Progress: {progress_pct:.1f}% ({chunks_completed}/{total_chunks} chunks) | Exported: {records_exported_count} records | Speed: {records_per_second:.2f} parsed/s")
                             sys.stdout.flush()
+                            last_ui_update_time = current_time  # Reset the UI timer
 
                     except Exception as exc:
                         print(f"\nError processing chunk: {exc}", file=sys.stderr)
