@@ -41,6 +41,12 @@ def sigint_handler(sig, frame):
         os._exit(1)
 
 # --- Functions ---
+def get_composite_key(ip, timestamp):
+    """Creates a unique string key combining IP and Timestamp."""
+    ip_str = str(ip).strip().lower()
+    ts_str = str(timestamp).strip() if pd.notna(timestamp) and timestamp else "none"
+    return f"{ip_str}|{ts_str}"
+
 def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo):
     if SHUTDOWN_EVENT.is_set():
         row_data['Error_Reason'] = "Canceled (Graceful Shutdown)"
@@ -83,7 +89,12 @@ def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo):
             if attempt > 0:
                 print(f"  [+] IP {ip_address} successfully enriched after {attempt} retry(s).")
                 
-            return (True, {**row_data, **json_response})
+            # Merge original row data with API response
+            merged_data = {**row_data, **json_response}
+            # Remove redundant 'IP' key (API provides 'ip' natively)
+            merged_data.pop('IP', None)
+            
+            return (True, merged_data)
             
         except requests.exceptions.RequestException as e:
             is_retryable = True
@@ -110,13 +121,11 @@ def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo):
                 fail_prefix = f"Failed after {MAX_RETRIES} retries" if is_retryable else "Failed (Non-retryable)"
                 row_data['Error_Reason'] = f"{fail_prefix}: {error_desc}"
                 
-                # Explicit final failure log for the console
                 if attempt >= MAX_RETRIES:
                     print(f"  [-] IP {ip_address} permanently failed after maximum retries.")
                     
                 return (False, row_data)
         except Exception as e:
-            # Bulletproof catch-all for bizarre non-network errors
             row_data['Error_Reason'] = f"Unexpected Error: {str(e)}"
             print(f"  [-] IP {ip_address} crashed unexpectedly: {str(e)}")
             return (False, row_data)
@@ -200,18 +209,17 @@ def process_chunk(df_chunk, ip_col, ts_col, perform_historic_lookup):
 def write_to_json_stream(results_iterator, output_path, failed_path, stats_ref, start_time):
     last_update_time = time.time()
     try:
-        # Open both files in append mode simultaneously
         with open(output_path, 'a', encoding='utf-8') as outfile, \
              open(failed_path, 'a', encoding='utf-8') as failfile:
              
             for success, result_data in results_iterator:
                 if success:
                     outfile.write(json.dumps(result_data, ensure_ascii=False) + '\n')
-                    outfile.flush()  # Force write to disk instantly
+                    outfile.flush()
                     stats_ref['success'] += 1
                 else:
                     failfile.write(json.dumps(result_data, ensure_ascii=False) + '\n')
-                    failfile.flush() # Force write to disk instantly
+                    failfile.flush()
                     stats_ref['failed'] += 1
                 
                 stats_ref['processed'] += 1
@@ -220,7 +228,8 @@ def write_to_json_stream(results_iterator, output_path, failed_path, stats_ref, 
                 if current_time - last_update_time >= 5 and not SHUTDOWN_EVENT.is_set():
                     elapsed = current_time - start_time
                     rps = stats_ref['processed'] / elapsed if elapsed > 0 else 0
-                    print(f"  Processed {stats_ref['processed']} ({stats_ref['success']} ok, {stats_ref['failed']} fail) - {rps:.2f} r/s")
+                    skip_str = f", {stats_ref['skipped']} skipped" if stats_ref['skipped'] > 0 else ""
+                    print(f"  Processed {stats_ref['processed']} ({stats_ref['success']} ok, {stats_ref['failed']} fail{skip_str}) - {rps:.2f} r/s")
                     last_update_time = current_time
     except Exception as e:
         print(f"\nError writing to file: {e}", file=sys.stderr)
@@ -237,23 +246,70 @@ if __name__ == "__main__":
             print("No token provided. Exiting.", file=sys.stderr)
             sys.exit(1)
         os.environ['TOKEN'] = api_token
+
+    # --- Mode Selection ---
+    print("\n" + "="*40)
+    print("Spur API Enrichment Tool".center(40))
+    print("="*40)
+    print("[1] Start New Enrichment Session")
+    print("[2] Resume Previous Session")
     
-    input_file_path = sys.argv[1] if len(sys.argv) == 2 else None
-    
-    if input_file_path is None:
-        print("\n--- Input File Required ---")
+    resume_mode = False
+    while True:
+        mode_choice = input("\nSelect an option (1 or 2): ").strip()
+        if mode_choice in ['1', '2']:
+            resume_mode = (mode_choice == '2')
+            break
+        print("Invalid choice.")
+
+    processed_keys = set()
+    prev_success_path = None
+    prev_fail_path = None
+
+    if resume_mode:
+        print("\n--- Resume Setup ---")
         while True:
-            file_input = input("Enter the path to your CSV or XLSX file: ").strip()
+            prev_success_path = input("Path to previous SUCCESS JSON file (or press Enter if none): ").strip()
+            if not prev_success_path or os.path.exists(prev_success_path): break
+            print("File not found.")
+            
+        while True:
+            prev_fail_path = input("Path to previous FAILED JSON file (or press Enter if none): ").strip()
+            if not prev_fail_path or os.path.exists(prev_fail_path): break
+            print("File not found.")
+
+        print("\nScanning previous files to build memory cache...")
+        for filepath in [prev_success_path, prev_fail_path]:
+            if filepath and os.path.exists(filepath):
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if line.strip():
+                            try:
+                                record = json.loads(line)
+                                # Fallback checks for lowercase 'ip' (successes) or uppercase 'IP' (failures)
+                                ip = record.get('ip') or record.get('IP')
+                                ts = record.get('Timestamp')
+                                if ip:
+                                    processed_keys.add(get_composite_key(ip, ts))
+                            except json.JSONDecodeError:
+                                pass
+        print(f"✅ Loaded {len(processed_keys):,} previously processed records into RAM.")
+
+    # --- Spreadsheet Input ---
+    input_file_path = sys.argv[1] if len(sys.argv) == 2 else None
+    if input_file_path is None or resume_mode:
+        print("\n--- Input Spreadsheet ---")
+        while True:
+            file_input = input("Enter the path to your CSV or XLSX file to enrich: ").strip()
             if os.path.exists(file_input):
                 input_file_path = file_input
                 break
             print(f"Error: File not found.")
 
     output_dir = os.path.dirname(input_file_path)
-    input_file_basename = os.path.basename(input_file_path)
-    input_file_name_without_ext = os.path.splitext(input_file_basename)[0]
+    input_file_name_without_ext = os.path.splitext(os.path.basename(input_file_path))[0]
 
-    print(f"Reading data from {input_file_path}...")
+    print(f"\nReading data from {input_file_path}...")
     file_ext = input_file_path.lower().split('.')[-1]
     
     if file_ext == 'csv':
@@ -279,25 +335,27 @@ if __name__ == "__main__":
     use_maxmind_geo = geo_input in ['yes', 'y']
     print("-" * 35)
 
-    # Output file paths
-    if perform_historic_lookup:
-        default_out = f"{input_file_name_without_ext}_SpurHistoricEnrichment.json"
+    # --- Output File Configuration ---
+    if resume_mode:
+        output_file_path = prev_success_path if prev_success_path else os.path.join(output_dir, f"{input_file_name_without_ext}_SpurEnrichment.json")
+        failed_file_path = prev_fail_path if prev_fail_path else os.path.join(output_dir, f"{input_file_name_without_ext}_NoEnrichmentData.json")
+        print(f"\nResuming! New results will be APPENDED to:")
+        print(f"  Success -> {output_file_path}")
+        print(f"  Failures -> {failed_file_path}")
     else:
-        default_out = f"{input_file_name_without_ext}_SpurEnrichment.json"
-
-    out_input = input(f"Enter success output file name, or press Enter for default ({default_out}): ").strip()
-    output_file_path = os.path.join(output_dir, out_input if out_input else default_out)
-    
-    failed_file_path = os.path.join(output_dir, f"{input_file_name_without_ext}_NoEnrichmentData.json")
-
-    # Clear files if they already exist
-    if os.path.exists(output_file_path): open(output_file_path, 'w').close()
-    if os.path.exists(failed_file_path): open(failed_file_path, 'w').close()
+        default_out = f"{input_file_name_without_ext}_SpurHistoricEnrichment.json" if perform_historic_lookup else f"{input_file_name_without_ext}_SpurEnrichment.json"
+        out_input = input(f"\nEnter success output file name, or press Enter for default ({default_out}): ").strip()
+        output_file_path = os.path.join(output_dir, out_input if out_input else default_out)
+        failed_file_path = os.path.join(output_dir, f"{input_file_name_without_ext}_NoEnrichmentData.json")
+        
+        # Clear files if they already exist in a NEW session
+        if os.path.exists(output_file_path): open(output_file_path, 'w').close()
+        if os.path.exists(failed_file_path): open(failed_file_path, 'w').close()
 
     signal.signal(signal.SIGINT, sigint_handler)
 
     total_ips = 0
-    stats = {'processed': 0, 'success': 0, 'failed': 0}
+    stats = {'processed': 0, 'success': 0, 'failed': 0, 'skipped': 0}
 
     print("\n" + "-"*50)
     print("💡 TIP: Press Ctrl+Z to PAUSE, type 'fg' to RESUME.")
@@ -310,9 +368,24 @@ if __name__ == "__main__":
             chunk.columns = chunk.columns.str.lower().str.strip()
             total_ips += len(chunk)
             chunk_data = process_chunk(chunk, ip_col, ts_col, perform_historic_lookup)
-            valid = [r for r in chunk_data if r.get('IP') and str(r['IP']).lower() != 'nan']
             
-            results = executor.map(lambda r: enrich_ip(r, api_token, perform_historic_lookup, use_maxmind_geo), valid)
+            valid_to_process = []
+            for r in chunk_data:
+                ip_addr = r.get('IP')
+                if not ip_addr or str(ip_addr).lower() == 'nan':
+                    continue
+                
+                # Check memory cache before sending to API
+                ts_val = r.get('Timestamp') if perform_historic_lookup else None
+                composite_key = get_composite_key(ip_addr, ts_val)
+                
+                if resume_mode and composite_key in processed_keys:
+                    stats['skipped'] += 1
+                    stats['processed'] += 1
+                else:
+                    valid_to_process.append(r)
+            
+            results = executor.map(lambda r: enrich_ip(r, api_token, perform_historic_lookup, use_maxmind_geo), valid_to_process)
             write_to_json_stream(results, output_file_path, failed_file_path, stats, start_main_time)
             
             if SHUTDOWN_EVENT.is_set():
@@ -321,7 +394,8 @@ if __name__ == "__main__":
     print("\n" + "="*50)
     print("COMPLETED / SAVED".center(50))
     print("="*50)
-    print(f"Total IPs Processed:    {stats['processed']}")
+    print(f"Total IPs Evaluated:    {stats['processed']}")
+    print(f"Already Processed (Skip):{stats['skipped']}")
     print(f"Successfully Enriched:  {stats['success']}")
     print(f"Failed Lookups:         {stats['failed']}")
     print("-" * 50)
