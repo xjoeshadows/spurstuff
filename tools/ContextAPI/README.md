@@ -1,34 +1,31 @@
 ## A collection of tools to interact with Spur's Feeds. Substitute your own token variable for the placeholder in the scripts. 
-#### *All scripts expect a Spur token to be set as $TOKEN, otherwise will prompt the user to paste it in.
+### *All scripts expect a Spur token to be set as $TOKEN, otherwise will prompt the user to paste it in.
 
-- ### contextAPIeasyenrichment.py: 
+## Enrichment Tools:
+
+- #### contextAPIeasyenrichment.py: 
   - An easy way to do context api enrichment. Accepts a filename of IPs (comma, newline, or space separated) as an argument as well as pasting into the terminal.
   
-- ### spurcurrentipenrichment.py
+- #### spurcurrentipenrichment.py
   - a simple tool to do an enrichment on the user's current external IP with colorized output
 
-- ### contextAPIFlexibleFileEnrichment.py:
+- #### contextAPIFlexibleFileEnrichment.py:
   - Enriches a CSV of IPs and outputs to JSONL. Requires at least a column entitled IPs, IP Addresses, etc...and also accepts a Timestamp column for historical Context API lookups. Will take any additional columns (such as a transaction ID column) and appends to the output enrichment e.g. for correlation purposes. The script has a variable number of workers for parallel lookup requests.
  
-- ### contextAPIEnrichmentHelper.py:
+- #### contextAPIEnrichmentHelper.py:
   - I created this tool to help provide enrichments for IPs which the original FlexibleFileEnrichment tool may have not found enrichments for based on the original timestamps provided. It allows you to specify the NoEnrichment output file from that script and specify a new timeframe to attempt to enrich against the Spur API with. 
  
-- ### contextAPI_timelineanalysis.py
+- #### contextAPI_timelineanalysis.py:
   - Will enrich an IP or IPs with multiple dates based on the user timeline specified and return the changes to the data over that timeline for quick temporal analysis. 
 
-- ### IPs+Timestamps.csv:
+## Data Management Tools:
+- #### contextAPI_JsonAnalyzer.py:
+  - Designed to break down a JSON of Spur's data, either from an enrichment or a feed to provide a deep statistical analysis of the keys witin it.
+- #### contextAPI_HistoricEnrichmentDiffer.py:
+  - Designed to help analyze the differences between two JSON files, either at a high level statistical analysis of the differences between the files or a file export of the deep IP by IP level breakdown of key/value changes/adds/deletions.    
+
+- #### IPs+Timestamps.csv:
   - Sample CSV file
-
-## Archived:
-- ### contextAPI-IPEnrichToJSON.py:
-  - Enriches a list of IPs in a txt file, variable workers for parallel requests, outputs to JSONL. This script expects a column for IPs and a column for Timestamps which requires Context API Historical lookups.
-
-- ### contextAPIEnrich-IPs-Timestamps-CSV.py:
-    - Enriches a list of IPs and Timestamps in a CSV, outputs to CSV.
-
-- ### contextAPIEnrich-IPs-Timestamps-JSONL.py:
-  - Enriches a list of IPs and Timestamps in a CSV, outputs to JSONL
-
 
 
 
