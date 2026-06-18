@@ -40,31 +40,36 @@ def sigint_handler(sig, frame):
         os._exit(1)
 
 # --- Date Parsing Helpers ---
-def parse_single_date(date_str):
-    """Attempts to parse a variety of date formats into a datetime object."""
-    date_str = str(date_str).strip()
-    
-    # Handle epoch
+def parse_single_date(val):
+    """Universal date parser. Returns a python datetime object or None."""
+    if pd.isna(val) or str(val).lower() == 'nan':
+        return None
+    if isinstance(val, (pd.Timestamp, datetime)):
+        return val
+        
     try:
-        epoch_val = float(date_str)
+        epoch_val = float(val)
         if epoch_val > 100000000: 
             return datetime.fromtimestamp(epoch_val)
-    except ValueError:
-        pass
-        
+    except (ValueError, OverflowError, TypeError): 
+        pass 
+
+    ts_str = str(val).strip()
+    if ts_str.endswith('.0'):
+        ts_str = ts_str[:-2]
+
     formats = [
-        '%Y%m%d', '%Y-%m-%d', '%m/%d/%Y', '%m/%d/%y', '%m-%d-%Y',
-        '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S', '%m/%d/%Y %H:%M'
+        '%Y%m%d', '%m/%d/%Y', '%m/%d/%y', '%Y-%m-%d', '%m-%d-%Y',
+        '%m/%d/%Y %H:%M', '%m/%d/%y %H:%M', '%Y-%m-%d %H:%M:%S',
+        '%a, %b %d, %Y %I:%M %p %Z', '%Y-%m-%dT%H:%M:%S'
     ]
     for fmt in formats:
         try:
-            return datetime.strptime(date_str, fmt)
+            return datetime.strptime(ts_str, fmt)
         except ValueError:
             continue
-            
-    # Try ISO fallback
     try:
-        return datetime.fromisoformat(date_str.replace('Z', ''))
+        return datetime.fromisoformat(ts_str.replace('Z', ''))
     except ValueError:
         return None
 
@@ -73,6 +78,13 @@ def extract_dates_from_input(input_val):
     Parses user input or spreadsheet cell.
     Extracts all discrete dates from arrays and deduplicates them by day.
     """
+    if pd.isna(input_val):
+        return []
+
+    # If it's already a native datetime object from pandas, bypass string splitting
+    if isinstance(input_val, (pd.Timestamp, datetime)):
+        return [input_val.strftime('%Y%m%d')]
+
     input_str = str(input_val).strip()
     if not input_str or input_str.lower() == 'nan':
         return []
@@ -267,7 +279,7 @@ if __name__ == "__main__":
     print("How would you like to provide the date(s) for lookup?")
     print("  1: Terminal Input (Apply discrete dates/arrays to ALL records)")
     print("  2: Spreadsheet Mapping (Map specific dates to specific IPs via an external file)")
-    print("  3: Global Range Discovery (Detect global range from the NoEnrichment file and apply to ALL records)")
+    print("  3: Global Range Discovery (Detect global range from ORIGINAL spreadsheet and apply to ALL failed IPs)")
     print("-" * 50)
     
     mode = input("Select mode (1, 2, or 3): ").strip()
@@ -322,7 +334,7 @@ if __name__ == "__main__":
                 print(f"  Parsed {i + 1}/{total_rows} spreadsheet rows...")
                 
             ip_val = str(row[ip_col]).strip()
-            ts_val = str(row[ts_col]).strip()
+            ts_val = row[ts_col]
             dates = extract_dates_from_input(ts_val)
             if dates:
                 ip_date_map[ip_val] = dates
@@ -341,23 +353,33 @@ if __name__ == "__main__":
         print(f"\nMatched IPs generated {len(tasks)} specific date lookups.")
 
     elif mode == '3':
-        print("\nScanning the loaded NoEnrichment records to discover the global date range...")
-        all_dates = set()
+        while True:
+            original_file = input("\nEnter the path to your ORIGINAL input Spreadsheet (CSV/XLSX): ").strip()
+            if os.path.exists(original_file):
+                break
+            print("Error: File not found.")
+            
+        print("\nLoading spreadsheet into Pandas...")
+        if original_file.lower().endswith('.csv'):
+            df = pd.read_csv(original_file)
+        else:
+            df = pd.read_excel(original_file)
+            
+        ip_col, ts_col = find_spreadsheet_columns(df)
+        print(f"Mapped Date column: '{ts_col}'")
         
-        for record in failed_records:
-            # Check common keys that the primary script might have used to store the date
-            for key in ['Timestamp', 'Queried_Date', 'date', 'time']:
-                if key in record and record[key]:
-                    val = str(record[key]).strip()
-                    if val.lower() not in ['nan', 'none', 'null']:
-                        dt = parse_single_date(val)
-                        if dt:
-                            all_dates.add(dt.strftime('%Y%m%d'))
-                    # Break out of the key loop if we found the date for this record
-                    break 
+        print("\nScanning spreadsheet to discover the global date range...")
+        all_dates = set()
+        total_rows = len(df)
+        for i, row in df.iterrows():
+            if (i + 1) % 5000 == 0:
+                print(f"  Scanned {i + 1}/{total_rows} rows...")
+            ts_val = row[ts_col]
+            dates = extract_dates_from_input(ts_val)
+            all_dates.update(dates)
 
         if not all_dates:
-            print("\n[!] Error: Could not find any valid dates in the NoEnrichment file to calculate a range.")
+            print("\n[!] Error: Could not find any valid dates in the original file to calculate a range.")
             sys.exit(1)
             
         dt_objects = [datetime.strptime(d, '%Y%m%d') for d in all_dates]
