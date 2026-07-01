@@ -4,7 +4,7 @@ import json
 import sys
 import os
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import concurrent.futures
 from requests.adapters import HTTPAdapter
 import time
@@ -115,9 +115,10 @@ def extract_dates_from_input(input_val):
 # --- Core Functions ---
 def enrich_ip_historic(task, api_token):
     row_data, ip_address, target_date = task
+    date_display = target_date if target_date else "Current"
     
     result_row = dict(row_data)
-    result_row['Queried_Date'] = target_date
+    result_row['Queried_Date'] = date_display
     
     if SHUTDOWN_EVENT.is_set():
         result_row['Error_Reason'] = "Canceled (Graceful Shutdown)"
@@ -127,7 +128,10 @@ def enrich_ip_historic(task, api_token):
         result_row['Error_Reason'] = 'Missing or Invalid IP'
         return (False, result_row)
 
-    url = f"{api_url_base}{ip_address}?dt={target_date}"
+    url = f"{api_url_base}{ip_address}"
+    if target_date:
+        url += f"?dt={target_date}"
+        
     headers = {'TOKEN': api_token}
 
     for attempt in range(MAX_RETRIES + 1):
@@ -139,14 +143,14 @@ def enrich_ip_historic(task, api_token):
             response = HTTP.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
             
             if response.status_code == 404:
-                result_row['Error_Reason'] = "404 Not Found (No Data for this Date)"
+                result_row['Error_Reason'] = f"404 Not Found (No Data for {date_display})"
                 return (False, result_row)
                 
             response.raise_for_status()
             json_response = response.json()
             
             if attempt > 0:
-                print(f"  [+] IP {ip_address} ({target_date}) successfully enriched after {attempt} retry(s).")
+                print(f"  [+] IP {ip_address} ({date_display}) successfully enriched after {attempt} retry(s).")
                 
             return (True, {**result_row, **json_response})
             
@@ -165,7 +169,7 @@ def enrich_ip_historic(task, api_token):
             
             if is_retryable and attempt < MAX_RETRIES:
                 backoff_time = 2 * (2 ** attempt)
-                print(f"  [!] Error on {ip_address} ({target_date}) [{error_desc}]. Backing off {backoff_time}s (Attempt {attempt + 1}/{MAX_RETRIES})...")
+                print(f"  [!] Error on {ip_address} ({date_display}) [{error_desc}]. Backing off {backoff_time}s (Attempt {attempt + 1}/{MAX_RETRIES})...")
                 
                 for _ in range(backoff_time):
                     if SHUTDOWN_EVENT.is_set():
@@ -176,7 +180,7 @@ def enrich_ip_historic(task, api_token):
                 result_row['Error_Reason'] = f"{fail_prefix}: {error_desc}"
                 
                 if attempt >= MAX_RETRIES:
-                    print(f"  [-] IP {ip_address} ({target_date}) permanently failed after max retries.")
+                    print(f"  [-] IP {ip_address} ({date_display}) permanently failed after max retries.")
                     
                 return (False, result_row)
         except Exception as e:
@@ -277,38 +281,60 @@ if __name__ == "__main__":
     # Determine Date Input Method
     print("\n" + "-" * 50)
     print("How would you like to provide the date(s) for lookup?")
-    print("  1: Terminal Input (Apply discrete dates/arrays to ALL records)")
+    print("  1: Terminal Input (Apply current data or specific dates to ALL records)")
     print("  2: Spreadsheet Mapping (Map specific dates to specific IPs via an external file)")
     print("  3: Global Range Discovery (Detect global range from ORIGINAL spreadsheet and apply to ALL failed IPs)")
+    print("  4: Per-IP Proximity Buffer (Dynamically query a date range surrounding each IP's recorded timestamp)")
     print("-" * 50)
     
-    mode = input("Select mode (1, 2, or 3): ").strip()
+    mode = input("Select mode (1, 2, 3, or 4): ").strip()
     
-    tasks = [] # List of tuples: (row_data, ip, YYYYMMDD)
+    tasks = [] # List of tuples: (row_data, ip, YYYYMMDD or None)
 
     if mode == '1':
-        print("\nFORMAT EXAMPLES:")
-        print("  Single Date: 2026-02-06")
-        print("  Array:       [2026-02-06, 2026-02-08, 2026-02-10]")
+        print("\n" + "-" * 50)
+        print("Select Lookup Type:")
+        print("  A: Current Data (Live IP lookup, no historical dates)")
+        print("  B: Historical Data (Provide a discrete date or array of dates)")
+        print("-" * 50)
         
-        date_input = input("\nEnter your date configuration: ").strip()
-        global_dates = extract_dates_from_input(date_input)
+        sub_mode = input("Select choice (A or B): ").strip().upper()
         
-        if not global_dates:
-            print("Error: Could not parse any valid dates from input.")
-            sys.exit(1)
-            
-        print(f"Parsed {len(global_dates)} unique date(s) to apply to all records.")
-        
-        print("\nBuilding task queue...")
-        for i, record in enumerate(failed_records):
-            ip = record.get('IP')
-            if ip:
-                for dt in global_dates:
-                    tasks.append((record, ip, dt))
+        if sub_mode == 'A':
+            print("\nQueuing Current Data lookups for all records...")
+            for i, record in enumerate(failed_records):
+                ip = record.get('IP')
+                if ip:
+                    tasks.append((record, ip, None))
+                if (i + 1) % 50000 == 0:
+                    print(f"  Queued {i + 1} records...")
                     
-            if (i + 1) % 50000 == 0:
-                print(f"  Queued {i + 1} records...")
+        elif sub_mode == 'B':
+            print("\nFORMAT EXAMPLES:")
+            print("  Single Date: 2026-02-06")
+            print("  Array:       [2026-02-06, 2026-02-08, 2026-02-10]")
+            
+            date_input = input("\nEnter your date configuration: ").strip()
+            global_dates = extract_dates_from_input(date_input)
+            
+            if not global_dates:
+                print("Error: Could not parse any valid dates from input.")
+                sys.exit(1)
+                
+            print(f"Parsed {len(global_dates)} unique date(s) to apply to all records.")
+            
+            print("\nBuilding task queue...")
+            for i, record in enumerate(failed_records):
+                ip = record.get('IP')
+                if ip:
+                    for dt in global_dates:
+                        tasks.append((record, ip, dt))
+                        
+                if (i + 1) % 50000 == 0:
+                    print(f"  Queued {i + 1} records...")
+        else:
+            print("Invalid choice. Exiting.")
+            sys.exit(1)
                     
     elif mode == '2':
         while True:
@@ -432,6 +458,60 @@ if __name__ == "__main__":
             if (i + 1) % 50000 == 0:
                 print(f"  Queued {i + 1} records...")
 
+    elif mode == '4':
+        print("\n" + "-" * 50)
+        print("Enter the number of buffer days to apply around each IP's recorded timestamp(s).")
+        print("Example: A buffer of '1' will query the exact timestamp date, 1 day prior, and 1 day after.")
+        print("-" * 50)
+        
+        while True:
+            try:
+                buffer_days = int(input("\nEnter buffer days (e.g., 1, 3, 7): ").strip())
+                if buffer_days >= 0:
+                    break
+            except ValueError:
+                print("Please enter a valid whole number.")
+                
+        print("\nCalculating buffered dates and building task queue...")
+        missing_dates = 0
+        
+        for i, record in enumerate(failed_records):
+            ip = record.get('IP')
+            if not ip:
+                continue
+                
+            # Scan the record for date-related columns
+            record_dates = set()
+            for key in ['Timestamp', 'Queried_Date', 'date', 'time']:
+                # Do case-insensitive check of keys just in case
+                actual_key = next((k for k in record.keys() if key.lower() in k.lower()), None)
+                if actual_key and record[actual_key]:
+                    val = str(record[actual_key]).strip()
+                    if val.lower() not in ['nan', 'none', 'null']:
+                        extracted = extract_dates_from_input(val)
+                        if extracted:
+                            for d_str in extracted:
+                                dt_obj = datetime.strptime(d_str, '%Y%m%d')
+                                # Apply the sliding window buffer
+                                for offset in range(-buffer_days, buffer_days + 1):
+                                    buffered_dt = dt_obj + timedelta(days=offset)
+                                    record_dates.add(buffered_dt.strftime('%Y%m%d'))
+                            break # Found the dates, stop checking other columns
+                            
+            if not record_dates:
+                missing_dates += 1
+                continue
+                
+            for dt in record_dates:
+                tasks.append((record, ip, dt))
+                
+            if (i + 1) % 10000 == 0:
+                print(f"  Processed {i + 1} records...")
+                
+        print(f"\nGenerated {len(tasks)} specific buffered date lookups.")
+        if missing_dates > 0:
+            print(f"[!] Warning: {missing_dates} records were skipped because they lacked a valid, parsable timestamp in the NoEnrichment file.")
+
     else:
         print("Invalid selection. Exiting.")
         sys.exit(1)
@@ -456,7 +536,7 @@ if __name__ == "__main__":
     stats = {'processed': 0, 'success': 0, 'failed': 0}
 
     print("\n" + "-"*50)
-    print(f"Starting {len(tasks)} historical lookups...")
+    print(f"Starting {len(tasks)} lookups...")
     print("💡 TIP: Press Ctrl+Z to PAUSE, type 'fg' to RESUME.")
     print("💡 TIP: Press Ctrl+C to SAVE & QUIT gracefully.")
     print("-" * 50 + "\n")
