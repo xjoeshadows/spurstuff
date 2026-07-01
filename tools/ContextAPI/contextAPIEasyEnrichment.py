@@ -52,14 +52,38 @@ def enrich_single_ip(ip: str, token: str, date_str: str = None, use_mmgeo: bool 
     return ("error", f"Failed for {ip} after {MAX_RETRIES} retries.")
 
 
-def get_ips_from_user() -> list:
-    """Gets IPs from a file (Text or Excel) or interactive pasting."""
+def enrich_single_tag(tag: str, token: str) -> tuple:
+    """Retrieves metadata for a single service tag."""
+    headers = {"Token": token}
+    api_url = f"https://api.spur.us/v2/metadata/tags/{tag}"
+
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            response = requests.get(api_url, headers=headers, timeout=15)
+            response.raise_for_status()
+            return ("success", response.json())
+        except requests.exceptions.HTTPError as err:
+            if err.response.status_code in RETRY_STATUS_CODES and attempt < MAX_RETRIES:
+                delay = BACKOFF_FACTOR * (2 ** attempt) + random.uniform(0, 1)
+                time.sleep(delay)
+            else:
+                return ("error", f"Failed for tag '{tag}': HTTP {err.response.status_code}")
+        except requests.exceptions.RequestException as err:
+            if attempt < MAX_RETRIES:
+                delay = BACKOFF_FACTOR * (2 ** attempt) + random.uniform(0, 1)
+                time.sleep(delay)
+            else:
+                return ("error", f"Failed for tag '{tag}' after {MAX_RETRIES} retries: {err}")
+    return ("error", f"Failed for tag '{tag}' after {MAX_RETRIES} retries.")
+
+def get_items_from_user(item_type: str) -> list:
+    """Gets items (IPs or tags) from a file (Text or Excel) or interactive pasting."""
     if len(sys.argv) > 1:
         filepath = sys.argv[1]
         
         if filepath.lower().endswith(('.xlsx', '.xls')):
             try:
-                print(f"✅ Reading IPs from Excel file: {filepath}", file=sys.stderr)
+                print(f"✅ Reading {item_type} from Excel file: {filepath}", file=sys.stderr)
                 df = pd.read_excel(filepath, header=None)
                 return df[0].dropna().astype(str).tolist()
             except Exception as e:
@@ -67,7 +91,7 @@ def get_ips_from_user() -> list:
                 return []
         
         try:
-            print(f"✅ Reading IPs from text file: {filepath}", file=sys.stderr)
+            print(f"✅ Reading {item_type} from text file: {filepath}", file=sys.stderr)
             with open(filepath, 'r', encoding='utf-8') as f:
                 input_text = f.read()
         except FileNotFoundError:
@@ -77,9 +101,10 @@ def get_ips_from_user() -> list:
             print(f"❌ Error: Could not read file as UTF-8.", file=sys.stderr)
             return []
     else:
-        print("💡 Tip: For large lists, run with a filename: ./contextAPI_Easyenrichment.py IPs.xlsx\n", file=sys.stderr)
+        script_name = os.path.basename(sys.argv[0])
+        print(f"💡 Tip: For large lists, run with a filename: ./{script_name} {item_type.capitalize()}.txt\n", file=sys.stderr)
         print("--- Interactive Mode ---", file=sys.stderr)
-        print("Paste IPs, then press Enter on a blank line to continue.", file=sys.stderr)
+        print(f"Paste {item_type}, then press Enter on a blank line to continue.", file=sys.stderr)
         lines = []
         while True:
             try:
@@ -90,7 +115,7 @@ def get_ips_from_user() -> list:
         input_text = "\n".join(lines)
 
     processed_text = input_text.replace(',', ' ')
-    return [ip.strip() for ip in processed_text.split() if ip.strip()]
+    return [item.strip() for item in processed_text.split() if item.strip()]
 
 def get_historical_date() -> str | None:
     """Asks user if they want to perform a historical lookup."""
@@ -129,39 +154,73 @@ def run_enrichment_flow():
         print("❌ Error: The 'TOKEN' environment variable is not set.", file=sys.stderr)
         return
 
-    ip_list = get_ips_from_user()
-    if not ip_list:
-        print("\nNo IP addresses were found. Exiting.", file=sys.stderr)
-        return
+    # --- Mode selection ---
+    while True:
+        sys.stderr.write("\nSelect lookup type:\n")
+        sys.stderr.write("  1: IP Context Enrichment\n")
+        sys.stderr.write("  2: Service Tag Metadata\n")
+        sys.stderr.write("Enter choice (1 or 2): ")
+        sys.stderr.flush()
+        mode_choice = sys.stdin.readline().strip()
+        if mode_choice in ['1', '2']:
+            break
+        print("Invalid choice. Please enter 1 or 2.", file=sys.stderr)
 
-    date_str = get_historical_date()
-    use_mmgeo = get_mmgeo_preference()
+    # --- Set up parameters based on mode ---
+    if mode_choice == '1':
+        item_type = "IPs"
+        item_list = get_items_from_user(item_type)
+        if not item_list:
+            print(f"\nNo {item_type} were found. Exiting.", file=sys.stderr)
+            return
 
-    print(f"\nFound {len(ip_list)} IP(s). Starting enrichment... ⚙️\n", file=sys.stderr)
+        date_str = get_historical_date()
+        use_mmgeo = get_mmgeo_preference()
+        
+        print(f"\nFound {len(item_list)} {item_type}. Starting enrichment... ⚙️\n", file=sys.stderr)
+        
+        filename_prefix = date_str or datetime.now().strftime('%Y%m%d')
+        default_filename = f"{filename_prefix}_IPEnrichment.jsonl"
 
+    else:  # mode_choice == '2'
+        item_type = "tags"
+        item_list = get_items_from_user(item_type)
+        if not item_list:
+            print(f"\nNo {item_type} were found. Exiting.", file=sys.stderr)
+            return
+
+        print(f"\nFound {len(item_list)} {item_type}. Starting lookup... ⚙️\n", file=sys.stderr)
+        
+        filename_prefix = datetime.now().strftime('%Y%m%d')
+        default_filename = f"{filename_prefix}_TagMetadata.jsonl"
+
+    # --- Common execution and result handling ---
     all_results = []
-    failed_ips = []
+    failed_items = []
     
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_ip = {executor.submit(enrich_single_ip, ip, api_token, date_str, use_mmgeo): ip for ip in ip_list}
-        for future in as_completed(future_to_ip):
-            ip = future_to_ip[future]
+        if mode_choice == '1':
+            future_to_item = {executor.submit(enrich_single_ip, ip, api_token, date_str, use_mmgeo): ip for ip in item_list}
+        else:  # mode_choice == '2'
+            future_to_item = {executor.submit(enrich_single_tag, tag, api_token): tag for tag in item_list}
+
+        for future in as_completed(future_to_item):
+            item = future_to_item[future]
             try:
                 status, data = future.result()
                 if status == "success":
-                    # --- FIX: Added ensure_ascii=False for terminal output ---
                     print(json.dumps(data, ensure_ascii=False))
                     all_results.append(data)
                 else:
-                    failed_ips.append(data)
+                    failed_items.append(data)
             except Exception as exc:
-                failed_ips.append(f"Unexpected error for {ip}: {exc}")
+                failed_items.append(f"Unexpected error for {item}: {exc}")
 
     print("\nEnrichment complete.", file=sys.stderr)
     
-    if failed_ips:
+    if failed_items:
         print("\n--- Summary of Errors ---", file=sys.stderr)
-        for error in failed_ips:
+        for error in failed_items:
             print(f"  ! {error}", file=sys.stderr)
 
     if not all_results:
@@ -169,17 +228,13 @@ def run_enrichment_flow():
 
     while True:
         try:
-            sys.stderr.write(f"\nSave results to a file? (yes/no): ")
+            sys.stderr.write("\nSave results to a file? (yes/no): ")
             sys.stderr.flush()
             if sys.stdin.readline().strip().lower() in ["yes", "y"]:
-                filename_date = date_str or datetime.now().strftime('%Y%m%d')
-                default_fn = f"{filename_date}IPEnrichment.json"
-                
-                sys.stderr.write(f"Enter filename (default: {default_fn}): ")
+                sys.stderr.write(f"Enter filename (default: {default_filename}): ")
                 sys.stderr.flush()
-                filename = sys.stdin.readline().strip() or default_fn
+                filename = sys.stdin.readline().strip() or default_filename
                 
-                # --- FIX: Ensure UTF-8 encoding and avoid ASCII escaping ---
                 with open(filename, 'w', encoding='utf-8') as f:
                     for record in all_results:
                         f.write(json.dumps(record, ensure_ascii=False) + '\n')
