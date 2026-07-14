@@ -3,10 +3,12 @@ import requests
 import os
 import argparse
 import json
+import ipaddress
 import concurrent.futures
 import re
 import sys
 import textwrap
+import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -64,7 +66,6 @@ def check_match(actual_value: Any, target_value: Any) -> bool:
 # --- Normalization & Delta Calculation ---
 
 def normalize_for_comparison(item: Any) -> Any:
-    """Recursively sorts all lists/arrays to make comparisons order-agnostic."""
     if isinstance(item, dict):
         return {k: normalize_for_comparison(v) for k, v in item.items()}
     elif isinstance(item, list):
@@ -132,20 +133,56 @@ def load_ips(ip_file=None):
     raw_text = ""
     if ip_file:
         try:
-            with open(ip_file, 'r') as f: raw_text = f.read()
-        except FileNotFoundError: sys.exit(1)
+            with open(ip_file, 'r') as f:
+                raw_text = f.read()
+        except FileNotFoundError:
+            print(f"Error: IP file not found at '{ip_file}'", file=sys.stderr)
+            sys.exit(1)
     else:
         print("\nEnter IPs (Paste list). Press ENTER twice to finish:")
         lines = []
         while True:
             try:
                 line = input()
-                if line.strip() == "": break
+                if line.strip() == "":
+                    break
                 lines.append(line)
-            except EOFError: break
+            except EOFError:
+                break
         raw_text = "\n".join(lines)
+
+    # Split by commas, spaces, or newlines
     tokens = re.split(r'[,\s]+', raw_text)
-    return list(set(t.strip() for t in tokens if t.strip()))
+
+    valid_ips = set()
+    invalid_entries = set()
+
+    for token in tokens:
+        ip_str = token.strip()
+        if not ip_str:
+            continue
+        try:
+            # Validate and normalize the IP address
+            ip_obj = ipaddress.ip_address(ip_str)
+            valid_ips.add(str(ip_obj))
+        except ValueError:
+            invalid_entries.add(ip_str)
+
+    if invalid_entries:
+        print("\n⚠️  Warning: The following entries were skipped as they are not valid IP addresses:", file=sys.stderr)
+        # Show a sample of invalid entries to avoid flooding the terminal
+        sample_invalid = sorted(list(invalid_entries))[:10]
+        for invalid in sample_invalid:
+            print(f"  - '{invalid}'", file=sys.stderr)
+        if len(invalid_entries) > 10:
+            print(f"  - ... and {len(invalid_entries) - 10} more.", file=sys.stderr)
+        print("", file=sys.stderr)  # Add a newline for spacing
+
+    # Return a sorted list of unique, valid IPs
+    return sorted(list(valid_ips))
+
+# --- Robust Fetching Logic ---
+
 
 def get_historical_dates():
     while True:
@@ -170,6 +207,30 @@ def get_historical_dates():
             while start <= end:
                 dates.append(start.strftime("%Y%m%d")); start += timedelta(days=1)
             return dates
+
+# --- Robust Fetching Logic ---
+
+def fetch_single_date(ip, dt, token, today):
+    url = CURRENT_CONTEXT_URL.format(ip=ip) if dt == today else HISTORIC_CONTEXT_URL.format(ip=ip, date=dt)
+    headers = {"Token": token}
+    
+    # Retry logic for handling API Rate Limits (429s)
+    for attempt in range(3):
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                return dt, r.json()
+            elif r.status_code == 401:
+                return dt, "401"
+            elif r.status_code == 429:
+                time.sleep(2 ** attempt)  # Pauses for 1s, then 2s, then 4s
+                continue
+            else:
+                return dt, None  # Returns None cleanly for 404s (No data found)
+        except requests.exceptions.RequestException:
+            time.sleep(1)
+            continue
+    return dt, None
 
 # --- Table Wrapping & Printing ---
 
@@ -208,7 +269,6 @@ def print_timeline_to_terminal(ip, timeline):
         dt = event['date']
         f_dt = datetime.strptime(dt, "%Y%m%d").strftime("%Y-%m-%d")
         
-        # 1. Baseline Context
         if event['type'] == 'Initial Context':
             base = flatten_dict(event.get('full_context', {}))
             for i, k in enumerate(sorted(base.keys())):
@@ -217,7 +277,6 @@ def print_timeline_to_terminal(ip, timeline):
             print_sep()
             continue
             
-        # 2. Final Context
         if event['type'] == 'Final Context':
             base = flatten_dict(event.get('full_context', {}))
             for i, k in enumerate(sorted(base.keys())):
@@ -226,7 +285,6 @@ def print_timeline_to_terminal(ip, timeline):
             print_sep()
             continue
 
-        # 3. Change Events
         ch = event.get('changes', {})
         val_changes = ch.get('value_changes', {})
         keys_rem = ch.get('keys_disappeared', {})
@@ -272,28 +330,29 @@ def main():
             print(f"\n--- Fetching Data: {ip} ---")
             results, today = {}, datetime.now().strftime("%Y%m%d")
             with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as exe:
-                futs = {exe.submit(requests.get, (CURRENT_CONTEXT_URL.format(ip=ip) if dt == today else HISTORIC_CONTEXT_URL.format(ip=ip, date=dt)), headers={"Token": token}): dt for dt in dates}
+                futs = {exe.submit(fetch_single_date, ip, dt, token, today): dt for dt in dates}
                 for i, fut in enumerate(concurrent.futures.as_completed(futs), 1):
-                    dt = futs[fut]
-                    try:
-                        r = fut.result()
-                        if r.status_code == 200: results[dt] = r.json()
-                    except: pass
+                    dt, r_data = fut.result()
+                    if r_data == "401":
+                        print("\n  -> ERROR: 401 Unauthorized. Check your Spur Token.")
+                        sys.exit(1)
+                    if r_data: 
+                        results[dt] = r_data
                     print(f"\r    ⏳ Progress: [{i}/{len(dates)}] dates fetched...", end="", flush=True)
             print()
             
-            if not results: continue
+            if not results: 
+                print(f"⚠️  No historical data found for {ip} in the specified timeframe.")
+                continue
+                
             sorted_dates = sorted(results.keys())
             
-            # Baseline
             tl = [{'date': sorted_dates[0], 'type': 'Initial Context', 'full_context': results[sorted_dates[0]]}]
             
-            # Changes
             for i in range(1, len(sorted_dates)):
                 diff = deep_diff_recursive(results[sorted_dates[i-1]], results[sorted_dates[i]])
                 if diff: tl.append({'date': sorted_dates[i], 'type': 'Change', 'changes': diff})
                 
-            # Final State (only add if we are looking at more than 1 single date)
             if len(sorted_dates) > 1:
                 tl.append({'date': sorted_dates[-1], 'type': 'Final Context', 'full_context': results[sorted_dates[-1]]})
             
@@ -301,7 +360,6 @@ def main():
             if search_key:
                 analyze_attribute_presence(ip, results, search_key, search_value)
             
-            # Export all events including Final Context to JSONL
             for e in tl: f.write(json.dumps({'ip': ip, **e}) + '\n')
 
 def analyze_attribute_presence(ip, ip_results, search_key, search_value):
