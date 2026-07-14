@@ -76,7 +76,7 @@ def parse_single_date(val):
 def extract_dates_from_input(input_val):
     """
     Parses user input or spreadsheet cell.
-    Extracts all discrete dates from arrays and deduplicates them by day.
+    Extracts all discrete dates from arrays, ranges, and deduplicates them by day.
     """
     if pd.isna(input_val):
         return []
@@ -93,7 +93,7 @@ def extract_dates_from_input(input_val):
     if input_str.startswith('[') and input_str.endswith(']'):
         input_str = input_str[1:-1]
 
-    # Split the string by commas
+    # Split the string by commas to handle arrays of dates/ranges
     parts = [p.strip() for p in input_str.split(',')]
     
     # Use a set to automatically deduplicate multiple timestamps on the same day
@@ -105,6 +105,31 @@ def extract_dates_from_input(input_val):
         if not p:
             continue
             
+        # Check for a date range
+        # Order is important: check for spaced delimiters first.
+        range_delimiters = [' to ', ' - ', '-']
+        is_range = False
+        for delim in range_delimiters:
+            if delim in p:
+                start_str, end_str = p.split(delim, 1)
+                start_dt = parse_single_date(start_str.strip())
+                end_dt = parse_single_date(end_str.strip())
+                
+                if start_dt and end_dt:
+                    if start_dt > end_dt:
+                        start_dt, end_dt = end_dt, start_dt # Swap if backwards
+                    
+                    current_dt = start_dt
+                    while current_dt <= end_dt:
+                        unique_dates.add(current_dt.strftime('%Y%m%d'))
+                        current_dt += timedelta(days=1)
+                    is_range = True
+                    break # Found a range, move to next part
+        
+        if is_range:
+            continue
+
+        # If not a range, parse as a single date
         dt = parse_single_date(p)
         if dt:
             # Convert to YYYYMMDD and add to the set
@@ -281,21 +306,20 @@ if __name__ == "__main__":
     # Determine Date Input Method
     print("\n" + "-" * 50)
     print("How would you like to provide the date(s) for lookup?")
-    print("  1: Terminal Input (Apply current data or specific dates to ALL records)")
-    print("  2: Spreadsheet Mapping (Map specific dates to specific IPs via an external file)")
-    print("  3: Global Range Discovery (Detect global range from ORIGINAL spreadsheet and apply to ALL failed IPs)")
-    print("  4: Per-IP Proximity Buffer (Dynamically query a date range surrounding each IP's recorded timestamp)")
+    print("  1: Terminal Input (Apply same date(s) to ALL records)")
+    print("  2: Spreadsheet-Driven Dates (Use a CSV/XLSX file for date logic)")
+    print("  3: Per-IP Proximity Buffer (Query dates surrounding each IP's recorded timestamp)")
     print("-" * 50)
     
-    mode = input("Select mode (1, 2, 3, or 4): ").strip()
+    mode = input("Select mode (1, 2, or 3): ").strip()
     
     tasks = [] # List of tuples: (row_data, ip, YYYYMMDD or None)
 
     if mode == '1':
         print("\n" + "-" * 50)
         print("Select Lookup Type:")
-        print("  A: Current Data (Live IP lookup, no historical dates)")
-        print("  B: Historical Data (Provide a discrete date or array of dates)")
+        print("  A: Current Data (Live IP lookup, no historical date)")
+        print("  B: Historical Data (Provide a discrete date, array, or range)")
         print("-" * 50)
         
         sub_mode = input("Select choice (A or B): ").strip().upper()
@@ -312,7 +336,7 @@ if __name__ == "__main__":
         elif sub_mode == 'B':
             print("\nFORMAT EXAMPLES:")
             print("  Single Date: 2026-02-06")
-            print("  Array:       [2026-02-06, 2026-02-08, 2026-02-10]")
+            print("  Array/Range: [2026-02-06, 2026-02-08 to 2026-02-10]")
             
             date_input = input("\nEnter your date configuration: ").strip()
             global_dates = extract_dates_from_input(date_input)
@@ -337,128 +361,129 @@ if __name__ == "__main__":
             sys.exit(1)
                     
     elif mode == '2':
+        # --- SPREADSHEET-DRIVEN MODE ---
         while True:
-            mapping_file = input("\nEnter the path to your mapping Spreadsheet (CSV/XLSX): ").strip()
-            if os.path.exists(mapping_file):
+            spreadsheet_file = input("\nEnter the path to your Spreadsheet (CSV/XLSX): ").strip()
+            if os.path.exists(spreadsheet_file):
                 break
             print("Error: File not found.")
-            
+
+        print("\n" + "-" * 50)
+        print("--- Spreadsheet Date Logic ---")
+        print("  A: Per-IP Enrichment: Use specific dates/ranges from the spreadsheet for each matching IP.")
+        print("  B: Global Enrichment: Use the spreadsheet to determine a date range to apply to ALL failed IPs.")
+        print("-" * 50)
+        
+        sub_mode = input("Select choice (A or B): ").strip().upper()
+
         print("\nLoading spreadsheet into Pandas...")
-        if mapping_file.lower().endswith('.csv'):
-            df = pd.read_csv(mapping_file)
+        if spreadsheet_file.lower().endswith('.csv'):
+            df = pd.read_csv(spreadsheet_file)
         else:
-            df = pd.read_excel(mapping_file)
+            df = pd.read_excel(spreadsheet_file)
             
         ip_col, ts_col = find_spreadsheet_columns(df)
         print(f"Mapped IP column: '{ip_col}' | Date column: '{ts_col}'")
-        
-        print("\nParsing spreadsheet dates (this may take a moment for large files)...")
-        ip_date_map = {}
-        total_rows = len(df)
-        for i, row in df.iterrows():
-            if (i + 1) % 5000 == 0:
-                print(f"  Parsed {i + 1}/{total_rows} spreadsheet rows...")
-                
-            ip_val = str(row[ip_col]).strip()
-            ts_val = row[ts_col]
-            dates = extract_dates_from_input(ts_val)
-            if dates:
-                ip_date_map[ip_val] = dates
-                
-        print("\nCross-referencing failed IPs with spreadsheet mappings...")
-        total_failed = len(failed_records)
-        for i, record in enumerate(failed_records):
-            if (i + 1) % 10000 == 0:
-                print(f"  Cross-referenced {i + 1}/{total_failed} records...")
-                
-            ip = record.get('IP')
-            if ip and ip in ip_date_map:
-                for dt in ip_date_map[ip]:
-                    tasks.append((record, ip, dt))
+
+        if sub_mode == 'A':
+            # Per-IP Enrichment
+            print("\nParsing spreadsheet dates (this may take a moment for large files)...")
+            ip_date_map = {}
+            total_rows = len(df)
+            for i, row in df.iterrows():
+                if (i + 1) % 5000 == 0:
+                    print(f"  Parsed {i + 1}/{total_rows} spreadsheet rows...")
                     
-        print(f"\nMatched IPs generated {len(tasks)} specific date lookups.")
+                ip_val = str(row[ip_col]).strip()
+                ts_val = row[ts_col]
+                dates = extract_dates_from_input(ts_val)
+                if dates:
+                    ip_date_map[ip_val] = dates
+                    
+            print("\nCross-referencing failed IPs with spreadsheet mappings...")
+            total_failed = len(failed_records)
+            for i, record in enumerate(failed_records):
+                if (i + 1) % 10000 == 0:
+                    print(f"  Cross-referenced {i + 1}/{total_failed} records...")
+                    
+                ip = record.get('IP')
+                if ip and ip in ip_date_map:
+                    for dt in ip_date_map[ip]:
+                        tasks.append((record, ip, dt))
+                        
+            print(f"\nMatched IPs generated {len(tasks)} specific date lookups.")
 
-    elif mode == '3':
-        while True:
-            original_file = input("\nEnter the path to your ORIGINAL input Spreadsheet (CSV/XLSX): ").strip()
-            if os.path.exists(original_file):
-                break
-            print("Error: File not found.")
-            
-        print("\nLoading spreadsheet into Pandas...")
-        if original_file.lower().endswith('.csv'):
-            df = pd.read_csv(original_file)
-        else:
-            df = pd.read_excel(original_file)
-            
-        ip_col, ts_col = find_spreadsheet_columns(df)
-        print(f"Mapped Date column: '{ts_col}'")
-        
-        print("\nScanning spreadsheet to discover the global date range...")
-        all_dates = set()
-        total_rows = len(df)
-        for i, row in df.iterrows():
-            if (i + 1) % 5000 == 0:
-                print(f"  Scanned {i + 1}/{total_rows} rows...")
-            ts_val = row[ts_col]
-            dates = extract_dates_from_input(ts_val)
-            all_dates.update(dates)
+        elif sub_mode == 'B':
+            # Global Enrichment
+            print("\nScanning spreadsheet to discover the global date range...")
+            all_dates = set()
+            total_rows = len(df)
+            for i, row in df.iterrows():
+                if (i + 1) % 5000 == 0:
+                    print(f"  Scanned {i + 1}/{total_rows} rows...")
+                ts_val = row[ts_col]
+                dates = extract_dates_from_input(ts_val)
+                all_dates.update(dates)
 
-        if not all_dates:
-            print("\n[!] Error: Could not find any valid dates in the original file to calculate a range.")
-            sys.exit(1)
-            
-        dt_objects = [datetime.strptime(d, '%Y%m%d') for d in all_dates]
-        min_date = min(dt_objects)
-        max_date = max(dt_objects)
-        
-        print("\n" + "="*50)
-        print("DISCOVERED GLOBAL DATE RANGE".center(50))
-        print("="*50)
-        print(f"Earliest Date: {min_date.strftime('%Y-%m-%d')}")
-        print(f"Latest Date:   {max_date.strftime('%Y-%m-%d')}")
-        print(f"Total Days:    {(max_date - min_date).days + 1} day(s)")
-        print("-" * 50)
-        
-        print("\nWould you like to query EVERY DAY in this contiguous range for ALL failed IPs?")
-        print("  1: Yes, use this discovered contiguous range")
-        print("  2: No, let me enter a custom contiguous date range")
-        range_choice = input("\nSelect choice (1 or 2): ").strip()
-        
-        if range_choice == '1':
-            global_dates = pd.date_range(start=min_date, end=max_date).strftime('%Y%m%d').tolist()
-        elif range_choice == '2':
-            start_input = input("\nEnter Start Date (e.g., 2026-02-01): ").strip()
-            end_input = input("Enter End Date (e.g., 2026-02-28): ").strip()
-            
-            start_dt = parse_single_date(start_input)
-            end_dt = parse_single_date(end_input)
-            
-            if not start_dt or not end_dt:
-                print("Error: Could not parse your start or end date.")
+            if not all_dates:
+                print("\n[!] Error: Could not find any valid dates in the spreadsheet to calculate a range.")
                 sys.exit(1)
                 
-            if start_dt > end_dt:
-                start_dt, end_dt = end_dt, start_dt
+            dt_objects = [datetime.strptime(d, '%Y%m%d') for d in all_dates]
+            min_date = min(dt_objects)
+            max_date = max(dt_objects)
+            
+            print("\n" + "="*50)
+            print("DISCOVERED GLOBAL DATE RANGE".center(50))
+            print("="*50)
+            print(f"Earliest Date: {min_date.strftime('%Y-%m-%d')}")
+            print(f"Latest Date:   {max_date.strftime('%Y-%m-%d')}")
+            print(f"Total Days:    {(max_date - min_date).days + 1} day(s)")
+            print("-" * 50)
+            
+            print("\nWould you like to query EVERY DAY in this contiguous range for ALL failed IPs?")
+            print("  1: Yes, use this discovered contiguous range")
+            print("  2: No, let me enter a custom contiguous date range")
+            range_choice = input("\nSelect choice (1 or 2): ").strip()
+            
+            if range_choice == '1':
+                global_dates = pd.date_range(start=min_date, end=max_date).strftime('%Y%m%d').tolist()
+            elif range_choice == '2':
+                start_input = input("\nEnter Start Date (e.g., 2026-02-01): ").strip()
+                end_input = input("Enter End Date (e.g., 2026-02-28): ").strip()
                 
-            global_dates = pd.date_range(start=start_dt, end=end_dt).strftime('%Y%m%d').tolist()
+                start_dt = parse_single_date(start_input)
+                end_dt = parse_single_date(end_input)
+                
+                if not start_dt or not end_dt:
+                    print("Error: Could not parse your start or end date.")
+                    sys.exit(1)
+                    
+                if start_dt > end_dt:
+                    start_dt, end_dt = end_dt, start_dt
+                    
+                global_dates = pd.date_range(start=start_dt, end=end_dt).strftime('%Y%m%d').tolist()
+            else:
+                print("Invalid choice. Exiting.")
+                sys.exit(1)
+                
+            print(f"\nGenerated {len(global_dates)} sequential day(s) to query.")
+            
+            print("Building task queue...")
+            for i, record in enumerate(failed_records):
+                ip = record.get('IP')
+                if ip:
+                    for dt in global_dates:
+                        tasks.append((record, ip, dt))
+                        
+                if (i + 1) % 50000 == 0:
+                    print(f"  Queued {i + 1} records...")
         else:
             print("Invalid choice. Exiting.")
             sys.exit(1)
-            
-        print(f"\nGenerated {len(global_dates)} sequential day(s) to query.")
-        
-        print("Building task queue...")
-        for i, record in enumerate(failed_records):
-            ip = record.get('IP')
-            if ip:
-                for dt in global_dates:
-                    tasks.append((record, ip, dt))
-                    
-            if (i + 1) % 50000 == 0:
-                print(f"  Queued {i + 1} records...")
 
-    elif mode == '4':
+    elif mode == '3':
+        # --- PER-IP PROXIMITY BUFFER MODE ---
         print("\n" + "-" * 50)
         print("Enter the number of buffer days to apply around each IP's recorded timestamp(s).")
         print("Example: A buffer of '1' will query the exact timestamp date, 1 day prior, and 1 day after.")
