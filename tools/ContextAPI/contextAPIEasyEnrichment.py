@@ -8,6 +8,7 @@ import time
 import random
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import ipaddress
 from datetime import datetime
 
 # --- Configuration ---
@@ -78,29 +79,31 @@ def enrich_single_tag(tag: str, token: str) -> tuple:
 
 def get_items_from_user(item_type: str) -> list:
     """Gets items (IPs or tags) from a file (Text or Excel) or interactive pasting."""
+    input_text = ""
     if len(sys.argv) > 1:
         filepath = sys.argv[1]
-        
+
         if filepath.lower().endswith(('.xlsx', '.xls')):
             try:
                 print(f"✅ Reading {item_type} from Excel file: {filepath}", file=sys.stderr)
                 df = pd.read_excel(filepath, header=None)
-                return df[0].dropna().astype(str).tolist()
+                # Join all cells from the first column into a single string, separated by spaces
+                input_text = ' '.join(df[0].dropna().astype(str).tolist())
             except Exception as e:
                 print(f"❌ Error reading Excel file: {e}", file=sys.stderr)
                 return []
-        
-        try:
-            print(f"✅ Reading {item_type} from text file: {filepath}", file=sys.stderr)
-            with open(filepath, 'r', encoding='utf-8') as f:
-                input_text = f.read()
-        except FileNotFoundError:
-            print(f"❌ Error: File not found at '{filepath}'", file=sys.stderr)
-            return []
-        except UnicodeDecodeError:
-            print(f"❌ Error: Could not read file as UTF-8.", file=sys.stderr)
-            return []
-    else:
+        else:  # Text file
+            try:
+                print(f"✅ Reading {item_type} from text file: {filepath}", file=sys.stderr)
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    input_text = f.read()
+            except FileNotFoundError:
+                print(f"❌ Error: File not found at '{filepath}'", file=sys.stderr)
+                return []
+            except UnicodeDecodeError:
+                print(f"❌ Error: Could not read file as UTF-8.", file=sys.stderr)
+                return []
+    else:  # Interactive
         script_name = os.path.basename(sys.argv[0])
         print(f"💡 Tip: For large lists, run with a filename: ./{script_name} {item_type.capitalize()}.txt\n", file=sys.stderr)
         print("--- Interactive Mode ---", file=sys.stderr)
@@ -109,13 +112,47 @@ def get_items_from_user(item_type: str) -> list:
         while True:
             try:
                 line = input()
-                if line: lines.append(line)
-                else: break
-            except EOFError: break
+                if line:
+                    lines.append(line)
+                else:
+                    break
+            except EOFError:
+                break
         input_text = "\n".join(lines)
 
     processed_text = input_text.replace(',', ' ')
-    return [item.strip() for item in processed_text.split() if item.strip()]
+    raw_items = [item.strip() for item in processed_text.split() if item.strip()]
+
+    # If we're not looking for IPs, just return the raw list (e.g., for tags)
+    if item_type != "IPs":
+        return raw_items
+
+    # If we are looking for IPs, expand CIDRs
+    final_items = []
+    for item in raw_items:
+        if '/' in item:
+            try:
+                network = ipaddress.ip_network(item, strict=False)
+                num_ips = network.num_addresses
+
+                if num_ips > 1_000_000:
+                    print(f"⚠️ WARNING: CIDR range '{item}' contains {num_ips:,} IP addresses, which is more than 1 million.", file=sys.stderr)
+                    sys.stderr.write("Are you sure you want to proceed with all lookups? (yes/no): ")
+                    sys.stderr.flush()
+                    confirm = sys.stdin.readline().strip().lower()
+                    if confirm not in ['y', 'yes']:
+                        print(f"Skipping CIDR range '{item}'.", file=sys.stderr)
+                        continue
+
+                final_items.extend([str(ip) for ip in network])
+
+            except ValueError:
+                # Not a valid CIDR, treat as a single item.
+                final_items.append(item)
+        else:
+            final_items.append(item)
+
+    return final_items
 
 def get_historical_date() -> str | None:
     """Asks user if they want to perform a historical lookup."""
