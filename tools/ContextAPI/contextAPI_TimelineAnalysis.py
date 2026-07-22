@@ -161,15 +161,35 @@ def load_ips(ip_file=None):
         ip_str = token.strip()
         if not ip_str:
             continue
-        try:
-            # Validate and normalize the IP address
-            ip_obj = ipaddress.ip_address(ip_str)
-            valid_ips.add(str(ip_obj))
-        except ValueError:
-            invalid_entries.add(ip_str)
+        
+        if '/' in ip_str:
+            try:
+                network = ipaddress.ip_network(ip_str, strict=False)
+                num_ips = network.num_addresses
+
+                if num_ips > 1_000_000:
+                    print(f"⚠️ WARNING: CIDR range '{ip_str}' contains {num_ips:,} IP addresses, which is more than 1 million.", file=sys.stderr)
+                    sys.stderr.write("Are you sure you want to proceed with all lookups? (yes/no): ")
+                    sys.stderr.flush()
+                    confirm = sys.stdin.readline().strip().lower()
+                    if confirm not in ['y', 'yes']:
+                        print(f"Skipping CIDR range '{ip_str}'.", file=sys.stderr)
+                        continue
+                
+                valid_ips.update(str(ip) for ip in network)
+
+            except ValueError:
+                invalid_entries.add(ip_str)
+        else:
+            try:
+                # Validate and normalize the IP address
+                ip_obj = ipaddress.ip_address(ip_str)
+                valid_ips.add(str(ip_obj))
+            except ValueError:
+                invalid_entries.add(ip_str)
 
     if invalid_entries:
-        print("\n⚠️  Warning: The following entries were skipped as they are not valid IP addresses:", file=sys.stderr)
+        print("\n⚠️  Warning: The following entries were skipped as they are not valid IP addresses or CIDRs:", file=sys.stderr)
         # Show a sample of invalid entries to avoid flooding the terminal
         sample_invalid = sorted(list(invalid_entries))[:10]
         for invalid in sample_invalid:
