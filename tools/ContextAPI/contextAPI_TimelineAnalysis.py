@@ -345,6 +345,8 @@ def main():
         search_key = input("Key (e.g., client.proxies): ").strip()
         search_value = parse_user_value(input("Value (Leave blank for ANY): ").strip())
 
+    all_ips_summary_data = []
+
     with open(OUTPUT_FILENAME, 'w') as f:
         for ip in ips:
             print(f"\n--- Fetching Data: {ip} ---")
@@ -363,6 +365,8 @@ def main():
             
             if not results: 
                 print(f"⚠️  No historical data found for {ip} in the specified timeframe.")
+                if search_key:
+                    all_ips_summary_data.append({"ip": ip, "intervals": []})
                 continue
                 
             sorted_dates = sorted(results.keys())
@@ -378,30 +382,88 @@ def main():
             
             print_timeline_to_terminal(ip, tl)
             if search_key:
-                analyze_attribute_presence(ip, results, search_key, search_value)
+                ip_summary = analyze_attribute_presence(ip, results, search_key, search_value)
+                all_ips_summary_data.append(ip_summary)
             
             for e in tl: f.write(json.dumps({'ip': ip, **e}) + '\n')
+
+    if search_key:
+        print_summary_table(all_ips_summary_data, search_key, search_value)
+
+def print_summary_table(summary_data: List[Dict[str, Any]], search_key: str, search_value: Any):
+    """Prints a summary table of attribute presence for all IPs."""
+    print("\n\n" + "="*80)
+    print(" ATTRIBUTE PRESENCE SUMMARY ".center(80, "="))
+    print("="*80)
+    print(f"Search Key:   {search_key}")
+    print(f"Search Value: {json.dumps(search_value) if search_value is not None else 'ANY'}")
+
+    if not summary_data:
+        print("\nNo IPs were processed for the summary.")
+        return
+
+    ip_col_width = max([len(d['ip']) for d in summary_data] + [len("IP Address")]) + 2
+
+    print("-" * 80)
+    print(f"{'IP Address':<{ip_col_width}}| Presence Timeline")
+    print("-" * 80)
+
+    for item in summary_data:
+        ip = item['ip']
+        intervals = item['intervals']
+
+        if not intervals:
+            print(f"{ip:<{ip_col_width}}| ❌ No matches found in timeframe.")
+        else:
+            for i, (start, end) in enumerate(intervals):
+                start_str = datetime.strptime(start, "%Y%m%d").strftime("%Y-%m-%d")
+
+                if end == "Present":
+                    timeline_str = f"✅ {start_str}  ➡️  (Latest Data)"
+                else:
+                    end_str = datetime.strptime(end, '%Y%m%d').strftime('%Y-%m-%d')
+                    if start == end:
+                        timeline_str = f"✅ {start_str} (1 Day)"
+                    else:
+                        timeline_str = f"✅ {start_str}  ➡️  {end_str}"
+
+                ip_display = ip if i == 0 else ""
+                print(f"{ip_display:<{ip_col_width}}| {timeline_str}")
+
+    print("-" * 80)
 
 def analyze_attribute_presence(ip, ip_results, search_key, search_value):
     dates = sorted(list(ip_results.keys()))
     intervals, current_start, is_present = [], None, False
     print(f"\n🔎 SEARCH: `{search_key}` | Value: `{search_value if search_value else 'ANY'}`")
     print("-" * 60)
-    for dt in dates:
+
+    for i, dt in enumerate(dates):
         match = check_match(get_nested_value(ip_results[dt], search_key), search_value)
+
         if match and not is_present:
-            current_start, is_present = dt, True
+            current_start = dt
+            is_present = True
         elif not match and is_present:
-            intervals.append((current_start, dt))
+            # The interval ended on the previous day
+            end_date = dates[i-1]
+            intervals.append((current_start, end_date))
             is_present = False
-    if is_present: intervals.append((current_start, "Present"))
+            current_start = None
+
+    # If it's still present at the end of the loop
+    if is_present and current_start:
+        intervals.append((current_start, "Present"))
+
     if not intervals: print(f"❌ No matches found.")
     else:
         for s, e in intervals:
             fs = datetime.strptime(s, "%Y%m%d").strftime("%Y-%m-%d")
             if e == "Present": print(f"   ✅ PRESENT: {fs}  ➡️  (Latest Data)")
             else:
-                fe = (datetime.strptime(e, "%Y%m%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+                fe = datetime.strptime(e, "%Y%m%d").strftime("%Y-%m-%d")
                 print(f"   ✅ PRESENT: {fs}  ➡️  {fe}" if fs != fe else f"   ✅ PRESENT: {fs} (1 Day)")
+
+    return {"ip": ip, "intervals": intervals}
 
 if __name__ == "__main__": main()
