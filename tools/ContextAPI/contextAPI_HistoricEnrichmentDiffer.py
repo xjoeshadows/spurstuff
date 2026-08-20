@@ -240,6 +240,26 @@ def main():
     print("  1: Strict A-to-B Diff      (Latest Historic State vs Current)")
     print("  2: Threat Hunter Timeline  (Full Cumulative History vs Current)")
     print("-" * 70)
+    print("  [1] Strict A-to-B Diff:")
+    print("      Compares one historic snapshot against one current snapshot,")
+    print("      per IP. If an IP appears more than once in either file, only")
+    print("      its LATEST occurrence is kept (earlier duplicates are dropped).")
+    print("      Best for a quick 'what changed since last time' comparison.")
+    print("      Output per IP: UNCHANGED / MODIFIED / REMOVED / ADDED, plus")
+    print("      which fields gained vs. lost data between the two files.")
+    print()
+    print("  [2] Threat Hunter Timeline:")
+    print("      Keeps EVERY historical record for an IP (indexed by Timestamp)")
+    print("      instead of collapsing to just the latest, so you can see how")
+    print("      an IP's data evolved across multiple past dates before being")
+    print("      compared against the current file.")
+    print("      Best for forensic/investigative work: spotting attributes that")
+    print("      appeared and disappeared over time, multi-stage changes, or")
+    print("      brand-new context that never showed up historically.")
+    print("      Output per IP: CONTINUOUS (seen historically & now) / AGED_OUT")
+    print("      (was in history, missing now) / EMERGING (new today), plus")
+    print("      transient/escalating/multi-stage flags for CONTINUOUS IPs.")
+    print("-" * 70)
 
     mode_choice = input("Select mode (1 or 2): ").strip()
     while mode_choice not in ['1', '2']:
@@ -248,13 +268,26 @@ def main():
     run_mode = 'a_to_b' if mode_choice == '1' else 'timeline'
 
     print("\n--- Input Files ---")
+    if run_mode == 'a_to_b':
+        print("  * Historic file: your OLDER enrichment feed. Each IP's entry should")
+        print("    carry a 'Timestamp' field; if an IP repeats, only its latest")
+        print("    occurrence in this file is used.")
+    else:
+        print("  * Historic file: a CUMULATIVE log of past enrichment runs (JSONL),")
+        print("    where each line is one IP's state on one date. Every 'Timestamp'")
+        print("    per IP is kept, building a full timeline instead of one snapshot.")
+    print("  * Current file: your NEWEST/latest enrichment feed to diff against")
+    print("    the historic data. This one does not need a Timestamp field.")
     file1_path = get_valid_filepath("Enter path to the Timestamp'd (Historic) JSON file: ")
     file2_path = get_valid_filepath("Enter path to the Non-timestamp'd (Current) JSON file: ")
 
     file2_mtime = os.path.getmtime(file2_path)
     auto_date = datetime.fromtimestamp(file2_mtime).strftime('%Y%m%d')
-    
+
     print(f"\n  * Auto-detected date from file metadata: {auto_date}")
+    print("  * This date labels the 'current' side of the diff (e.g. in output")
+    print("    field names like 'current_20260820'). It's cosmetic/labeling only")
+    print("    and doesn't affect which records are compared.")
     user_date = input("  * Press Enter to keep this date, or type a custom date (YYYYMMDD): ").strip()
     current_date = user_date if user_date else auto_date
 
@@ -520,6 +553,18 @@ def main():
     # JSON EXPORT PROMPT (For both branches)
     # -----------------------------------------------------------------
     print("\n" + "-" * 70)
+    if run_mode == 'timeline':
+        print("  * Export writes one JSON object per line (JSONL), one per IP, with")
+        print("    its full status (CONTINUOUS/AGED_OUT/EMERGING) and either its")
+        print("    changed/unchanged fields or its complete historical timeline.")
+        print("    The stats above are just a summary — this file has the details")
+        print("    needed to look up exactly which IPs/fields drove each number.")
+    else:
+        print("  * Export writes one JSON object per line (JSONL), one per IP, with")
+        print("    its status (MODIFIED/REMOVED/ADDED) and the specific fields that")
+        print("    changed (old vs. new value) or the full record for added/removed IPs.")
+        print("    The stats above are just a summary — this file has the details")
+        print("    needed to look up exactly which IPs/fields drove each number.")
     export_choice = input("Would you like to export the full details to a JSON file? (y/n): ").strip().lower()
     
     if export_choice == 'y':
