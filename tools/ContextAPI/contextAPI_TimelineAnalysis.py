@@ -16,9 +16,11 @@ from typing import Dict, Any, List, Optional, Tuple
 CURRENT_CONTEXT_URL = "https://api.spur.us/v2/context/{ip}"
 HISTORIC_CONTEXT_URL = "https://api.spur.us/v2/context/{ip}?dt={date}"
 OUTPUT_FILENAME = "spur_ip_analysis_timeline.jsonl"
-MAX_THREADS = 10 
-MAX_KEY_WIDTH = 25
-MAX_VAL_WIDTH = 45 
+MAX_THREADS = 10
+KEY_COL_WIDTH = 28
+ADD_COL_WIDTH = 34
+REM_COL_WIDTH = 26
+RULE_WIDTH = 78
 
 # --- Helper Functions ---
 
@@ -252,6 +254,26 @@ def fetch_single_date(ip, dt, token, today):
             continue
     return dt, None
 
+# --- Terminal Styling ---
+
+USE_COLOR = sys.stdout.isatty()
+
+class Colors:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    LIGHT = "\033[38;2;230;237;240m"
+    TEAL = "\033[38;2;111;184;174m"
+    GREEN = "\033[38;2;143;201;123m"
+    CORAL = "\033[38;2;230;139;114m"
+    AMBER = "\033[38;2;224;177;90m"
+    SLATE = "\033[38;2;127;167;201m"
+    GRAY = "\033[38;2;120;130;135m"
+
+def style(text, *codes):
+    if not USE_COLOR or not codes or not text:
+        return text
+    return "".join(codes) + text + Colors.RESET
+
 # --- Table Wrapping & Printing ---
 
 def wrap_text(text, width):
@@ -259,61 +281,73 @@ def wrap_text(text, width):
     text = str(text)
     return textwrap.wrap(text, width, break_long_words=True, replace_whitespace=False)
 
+def print_date_header(f_dt, subtitle):
+    label = f" {f_dt}   {subtitle} "
+    fill = "─" * max(2, RULE_WIDTH - 2 - len(label))
+    print("\n" + style("──" + label + fill, Colors.BOLD, Colors.TEAL))
+
+def print_kv_row(key, value):
+    key_lines = wrap_text(key, KEY_COL_WIDTH)
+    val_lines = wrap_text(value, ADD_COL_WIDTH + REM_COL_WIDTH + 2)
+    for i in range(max(len(key_lines), len(val_lines))):
+        k = key_lines[i] if i < len(key_lines) else ""
+        v = val_lines[i] if i < len(val_lines) else ""
+        print(f"  {style(k.ljust(KEY_COL_WIDTH), Colors.TEAL)}  {style(v, Colors.LIGHT)}")
+
+def print_change_row(key, added, removed):
+    is_count = '⬆️' in added or '⬇️' in added
+    add_color = Colors.AMBER if '⬆️' in added else Colors.SLATE if '⬇️' in added else Colors.GREEN
+    rem_color = Colors.GRAY if is_count else Colors.CORAL
+
+    add_text = f"+ {added}" if added else ""
+    rem_text = f"− {removed}" if removed else ""
+
+    key_lines = wrap_text(key, KEY_COL_WIDTH)
+    add_lines = wrap_text(add_text, ADD_COL_WIDTH) if add_text else [""]
+    rem_lines = wrap_text(rem_text, REM_COL_WIDTH) if rem_text else [""]
+
+    for i in range(max(len(key_lines), len(add_lines), len(rem_lines))):
+        k = key_lines[i] if i < len(key_lines) else ""
+        a = add_lines[i] if i < len(add_lines) else ""
+        r = rem_lines[i] if i < len(rem_lines) else ""
+        k_disp = style(k.ljust(KEY_COL_WIDTH), Colors.TEAL)
+        a_disp = style(a.ljust(ADD_COL_WIDTH), add_color) if a else " " * ADD_COL_WIDTH
+        r_disp = style(r, rem_color) if r else ""
+        print(f"  {k_disp}  {a_disp}  {r_disp}")
+
 def print_timeline_to_terminal(ip, timeline):
-    print(f"\n" + "="*105 + f"\n📈 TIMELINE ANALYSIS: {ip}\n" + "="*105)
-    
-    headers = ["Date", "🔄 Modified (Key)", "➕ Added (New Value)", "➖ Removed (Old Value)"]
-    col_widths = [12, MAX_KEY_WIDTH, MAX_VAL_WIDTH, MAX_VAL_WIDTH]
-    
-    def print_sep():
-        print("+-" + "-+-".join("-" * w for w in col_widths) + "-+")
-
-    def print_row(cells):
-        wrapped_cells = [wrap_text(cells[0], col_widths[0]),
-                         wrap_text(cells[1], col_widths[1]),
-                         wrap_text(cells[2], col_widths[2]),
-                         wrap_text(cells[3], col_widths[3])]
-        num_lines = max(len(c) for c in wrapped_cells)
-        for i in range(num_lines):
-            line = []
-            for j in range(4):
-                val = wrapped_cells[j][i] if i < len(wrapped_cells[j]) else ""
-                line.append(val.ljust(col_widths[j]))
-            print("| " + " | ".join(line) + " |")
-
-    print_sep()
-    print_row(headers)
-    print_sep()
+    print("\n" + style(f"📈 TIMELINE ANALYSIS: {ip}", Colors.BOLD))
+    print(style("─" * RULE_WIDTH, Colors.GRAY))
 
     for event in timeline:
         dt = event['date']
         f_dt = datetime.strptime(dt, "%Y%m%d").strftime("%Y-%m-%d")
-        
+
         if event['type'] == 'Initial Context':
             base = flatten_dict(event.get('full_context', {}))
-            for i, k in enumerate(sorted(base.keys())):
+            print_date_header(f_dt, "baseline · full context")
+            for k in sorted(base.keys()):
                 v = json.dumps(base[k], ensure_ascii=False) if isinstance(base[k], (dict, list)) else str(base[k])
-                print_row([f_dt if i == 0 else "", f"(Baseline) {k}", v, ""])
-            print_sep()
+                print_kv_row(k, v)
             continue
-            
+
         if event['type'] == 'Final Context':
             base = flatten_dict(event.get('full_context', {}))
-            for i, k in enumerate(sorted(base.keys())):
+            print_date_header(f_dt, "latest · full context")
+            for k in sorted(base.keys()):
                 v = json.dumps(base[k], ensure_ascii=False) if isinstance(base[k], (dict, list)) else str(base[k])
-                print_row([f_dt if i == 0 else "", f"(Final) {k}", v, ""])
-            print_sep()
+                print_kv_row(k, v)
             continue
 
         ch = event.get('changes', {})
         val_changes = ch.get('value_changes', {})
         keys_rem = ch.get('keys_disappeared', {})
-        
+
         entries = []
         for k, v in val_changes.items():
             old, new = v['old_value'], v['new_value']
-            
-            if old is None: 
+
+            if old is None:
                 entries.append((k, json.dumps(new, ensure_ascii=False), ""))
             elif k.endswith('.count') and isinstance(old, int) and isinstance(new, int):
                 entries.append((k, f"{new} ({'⬆️' if new > old else '⬇️'} {new-old:+d})", str(old)))
@@ -323,16 +357,19 @@ def print_timeline_to_terminal(ip, timeline):
                 rem_str = json.dumps(removed, ensure_ascii=False) if removed else ""
                 entries.append((k, add_str, rem_str))
             else:
-                entries.append((k, json.dumps(new, ensure_ascii=False) if isinstance(new, (dict, list)) else str(new), 
+                entries.append((k, json.dumps(new, ensure_ascii=False) if isinstance(new, (dict, list)) else str(new),
                                    json.dumps(old, ensure_ascii=False) if isinstance(old, (dict, list)) else str(old)))
-        
+
         for k, v in keys_rem.items():
             entries.append((k, "", json.dumps(v, ensure_ascii=False)))
 
         entries.sort(key=lambda x: x[0])
-        for i, (k, a, r) in enumerate(entries):
-            print_row([f_dt if i == 0 else "", k, a, r])
-        print_sep()
+
+        n = len(entries)
+        print_date_header(f_dt, f"{n} change" + ("" if n == 1 else "s"))
+        for k, a, r in entries:
+            print_change_row(k, a, r)
+    print()
 
 def main():
     parser = argparse.ArgumentParser(); parser.add_argument("ip_file", nargs='?'); args = parser.parse_args()
