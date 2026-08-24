@@ -137,7 +137,7 @@ def pre_scan_max_days(file_path, is_csv, start_col, end_col):
                     
     return max_delta
 
-def process_chunk(df_chunk, ip_col, start_col, end_col, perform_historic_lookup, max_days_cap, skipped_file_path):
+def process_chunk(df_chunk, ip_col, start_col, end_col, perform_historic_lookup, max_days_cap, skipped_file_path, missing_timestamp_behavior=None, run_date_str=None):
     """Expands rows into daily increments and logs overflow to the skipped file."""
     all_rows_data = []
     
@@ -154,7 +154,6 @@ def process_chunk(df_chunk, ip_col, start_col, end_col, perform_historic_lookup,
         if not perform_historic_lookup or not start_col:
             row_dict.pop(start_col, None)
             row_dict.pop(end_col, None)
-            row_dict['Timestamp'] = None
             all_rows_data.append(row_dict)
             continue
 
@@ -166,7 +165,14 @@ def process_chunk(df_chunk, ip_col, start_col, end_col, perform_historic_lookup,
 
         # Fallback if parsing completely fails
         if not s_dt and not e_dt:
-            row_dict['Timestamp'] = None
+            if missing_timestamp_behavior == 'no_data':
+                row_dict['Timestamp'] = None
+                row_dict['_NoDataMissingTimestamp'] = True
+            else:
+                # 'current_lookup' (or unset default): drop the dt param and be
+                # truthful in the output about what date the data reflects.
+                row_dict['Timestamp'] = run_date_str
+                row_dict['_ForceCurrentLookup'] = True
             all_rows_data.append(row_dict)
             continue
         elif s_dt and not e_dt:
@@ -213,15 +219,22 @@ def process_chunk(df_chunk, ip_col, start_col, end_col, perform_historic_lookup,
     return all_rows_data
 
 def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo):
+    force_current_lookup = row_data.pop('_ForceCurrentLookup', False)
+    no_data_missing_ts = row_data.pop('_NoDataMissingTimestamp', False)
+
     if SHUTDOWN_EVENT.is_set():
         row_data['Error_Reason'] = "Canceled (Graceful Shutdown)"
         return (False, row_data)
 
     ip_address = row_data.get('IP')
-    timestamp = row_data.get('Timestamp') if perform_historic_lookup else None
 
     if not ip_address or str(ip_address).lower() == 'nan':
         return (False, {**row_data, 'Error_Reason': 'Missing or Invalid IP'})
+
+    if no_data_missing_ts:
+        return (False, {**row_data, 'Error_Reason': 'Missing Timestamp (No Data per user selection)'})
+
+    timestamp = row_data.get('Timestamp') if (perform_historic_lookup and not force_current_lookup) else None
 
     url = f"{api_url_base}{ip_address}"
     query_params = []
@@ -322,6 +335,7 @@ def write_to_json_stream(results_iterator, output_path, failed_path, stats_ref, 
 # --- Main Script ---
 if __name__ == "__main__":
     start_main_time = time.time()
+    run_date_str = datetime.now().strftime('%Y%m%d')
 
     api_token = os.environ.get("TOKEN")
     if not api_token:
@@ -405,13 +419,28 @@ if __name__ == "__main__":
     
     perform_historic_lookup = False
     max_days_cap = None
+    missing_timestamp_behavior = None
 
     if start_col:
         print("-" * 50)
         col_display = f"'{start_col}' & '{end_col}'" if start_col != end_col else f"'{start_col}'"
         lookup_input = input(f"Date column(s) detected: {col_display}.\nPerform historical/range lookups? (yes/no): ").strip().lower()
         perform_historic_lookup = lookup_input in ['yes', 'y']
-        
+
+        if perform_historic_lookup:
+            print("\n--- Missing Timestamp Handling ---")
+            print("Some rows may be missing a usable date/timestamp value.")
+            print("  [1] Return no data for those IPs (skip the lookup entirely)")
+            print(f"  [2] Do a current (real-time) lookup instead, and record today's date ({run_date_str}) as their timestamp")
+
+            while True:
+                missing_ts_choice = input("Select an option (1 or 2): ").strip()
+                if missing_ts_choice in ['1', '2']:
+                    missing_timestamp_behavior = 'no_data' if missing_ts_choice == '1' else 'current_lookup'
+                    break
+                print("Invalid choice.")
+            print("-" * 50)
+
         if perform_historic_lookup and start_col != end_col:
             print("\n--- API Volume Protection ---")
             print("Because you have Start and End dates, rows will multiply into daily requests.")
@@ -477,6 +506,10 @@ if __name__ == "__main__":
     print("💡 TIP: Press Ctrl+C to SAVE & QUIT gracefully.")
     if max_days_cap:
         print(f"💡 TIP: Capped Date logic writing to {os.path.basename(skipped_file_path)}")
+    if missing_timestamp_behavior == 'no_data':
+        print("💡 TIP: Rows missing a timestamp will return No Data.")
+    elif missing_timestamp_behavior == 'current_lookup':
+        print(f"💡 TIP: Rows missing a timestamp will get a current lookup, dated {run_date_str}.")
     print("-" * 50 + "\n")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -484,7 +517,7 @@ if __name__ == "__main__":
             chunk.columns = chunk.columns.str.lower().str.strip()
             
             # Expand rows (or pass them through if no range)
-            chunk_data = process_chunk(chunk, ip_col, start_col, end_col, perform_historic_lookup, max_days_cap, skipped_file_path)
+            chunk_data = process_chunk(chunk, ip_col, start_col, end_col, perform_historic_lookup, max_days_cap, skipped_file_path, missing_timestamp_behavior, run_date_str)
             
             valid_to_process = []
             for r in chunk_data:
