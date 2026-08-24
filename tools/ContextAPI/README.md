@@ -16,7 +16,13 @@
   - I created this tool to help provide enrichments for IPs which the original FlexibleFileEnrichment tool may have not found enrichments for based on the original timestamps provided. It allows you to specify the NoEnrichment output file from that script and specify a new timeframe to attempt to enrich against the Spur API with. 
  
 - #### contextAPI_timelineanalysis.py:
-  - Will enrich an IP or IPs with multiple dates based on the user timeline specified and return the changes to the data over that timeline for quick temporal analysis. 
+  - Will enrich an IP or IPs with multiple dates based on the user timeline specified and return the changes to the data over that timeline for quick temporal analysis.
+
+- #### contextAPI_HistoricEnrichmentDiffer.py:
+  - A full differ across multiple enrichment files of IPs with two operating modes:
+    - Mode 1 will do a strict A-to-B diff If an IP appears more than once in either file, only its LATEST occurrence is kept (earlier duplicates are dropped). Best for a quick 'what changed since last time' comparison.
+    - Mode 2 keeps EVERY historical record for an IP (indexed by Timestamp) instead of collapsing to just the latest, so you can see how
+      an IP's data evolved across multiple past dates before being compared against the current file. Best for forensic/investigative work: spotting attributes that appeared and disappeared over time, multi-stage changes, or brand-new context that never showed up historically.
 
 ## Data Management Tools:
 - #### contextAPI_JsonAnalyzer.py:
