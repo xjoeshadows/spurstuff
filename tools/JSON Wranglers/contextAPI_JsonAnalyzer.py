@@ -17,9 +17,8 @@ Behavior notes:
   values like strings/numbers/bools/nulls) are omitted from the reported key list and summaries
   (their nested subkeys are still recorded and shown).
 - "Count" is the number of times a specific value was observed at that key.
-- "Percent" = (Count for this value) / (Total value observations for that key) * 100.
-  Percentages are relative to the key's value observations, not the number of documents or
-  the whole file.
+- "Percent" = (Count for this value) / (Total number of input objects (IPs analyzed)) * 100.
+  Percentages are relative to the total number of input objects processed, not the key's value observations.
 """
 
 import sys
@@ -162,30 +161,34 @@ def filter_container_only_keys(counters: Dict[str, Counter]) -> List[str]:
     return sorted(result)
 
 
-def summarize_file_keys(path: str) -> List[str]:
+def summarize_file_keys(path: str) -> (List[str], int):
     counters: Dict[str, Counter] = defaultdict(Counter)
+    total = 0
     for i, obj in enumerate(iter_json_objects(path), 1):
+        total = i
         if i % PROGRESS_EVERY == 0:
             print(f"Processed {i} objects...", file=sys.stderr)
         walk(obj, counters, "")
-    return filter_container_only_keys(counters)
+    return filter_container_only_keys(counters), total
 
 
-def summarize_file_full(path: str) -> Dict[str, Counter]:
+def summarize_file_full(path: str) -> (Dict[str, Counter], int):
     counters: Dict[str, Counter] = defaultdict(Counter)
+    total = 0
     for i, obj in enumerate(iter_json_objects(path), 1):
+        total = i
         if i % PROGRESS_EVERY == 0:
             print(f"Processed {i} objects...", file=sys.stderr)
         walk(obj, counters, "")
-    return counters
+    return counters, total
 
 
-def print_intro_explainers() -> None:
+def print_intro_explainers(total_objects: int) -> None:
     lines = [
         "Summary metrics explanation:",
         "  - Count : number of times the given value was observed for that key (i.e., occurrences of that specific value at that key).",
-        "  - Percent: (Count for this value / total value observations for that key) * 100",
-        "             (percentages are relative to the key's value observations, not the number of documents or the whole file).",
+        "  - Percent: (Count for this value / total number of input objects (IPs analyzed)) * 100",
+        f"             (percentages are relative to the total objects analyzed: {total_objects}).",
         "  - Arrays  : elements are aggregated under their parent key; array elements contribute to the parent's value counts.",
         "  - Container-only parent keys (objects/arrays only) are omitted from the key list."
     ]
@@ -194,8 +197,8 @@ def print_intro_explainers() -> None:
     print()
 
 
-def print_keys_menu(keys: List[str]) -> None:
-    print_intro_explainers()
+def print_keys_menu(keys: List[str], total_objects: int) -> None:
+    print_intro_explainers(total_objects)
     print("Keys identified:")
     idx_width = len(str(len(keys)))
     for idx, key in enumerate(keys, 1):
@@ -231,7 +234,7 @@ def parse_selection(selection: str, n_keys: int) -> List[int]:
 
 
 def print_summary_for_keys(
-    counters: Dict[str, Counter], keys: List[str], max_unique: int, truncate: int
+    counters: Dict[str, Counter], keys: List[str], max_unique: int, truncate: int, total_objects: int
 ) -> None:
     # column widths for aligned table
     count_w = 8
@@ -246,7 +249,7 @@ def print_summary_for_keys(
         print()
         print(f"{key_label}")
         print(f"{occ_label}")
-        print(f"  Note: 'Percent' = (Count for this value / total value observations for this key) * 100")
+        print(f"  Note: 'Percent' = (Count for this value / total number of input objects) * 100")
         items = sorted(counter.items(), key=lambda x: (-x[1], display_value(x[0], truncate)))
         unique_count = len(items)
         to_show = items[:max_unique]
@@ -256,7 +259,7 @@ def print_summary_for_keys(
             print(f"  Showing {unique_count} unique value(s):")
         print(f"  {header}")
         for sig, cnt in to_show:
-            pct = (cnt / total) * 100 if total else 0.0
+            pct = (cnt / total_objects) * 100 if total_objects else 0.0
             valstr = display_value(sig, truncate)
             print(f"  {cnt:<{count_w}d}  {pct:6.2f}%   {valstr}")
     if not keys:
@@ -264,14 +267,15 @@ def print_summary_for_keys(
 
 
 def summary_to_json(
-    counters: Dict[str, Counter], keys: List[str], max_unique: int, truncate: int
+    counters: Dict[str, Counter], keys: List[str], max_unique: int, truncate: int, total_objects: int
 ) -> Dict[str, Any]:
     out = {
         "_explainers": {
             "count": "number of times the specific value was observed for the key (occurrences of that value at the key)",
-            "percent": "count / total_value_observations_for_key * 100 (percent of value observations for that key)",
+            "percent": "count / total_number_of_input_objects * 100 (percent of input objects where this value appeared at the key)",
             "note": "arrays are aggregated under parent keys; container-only parent keys are omitted"
-        }
+        },
+        "_total_input_objects": total_objects
     }
     for key in keys:
         counter = counters.get(key, Counter())
@@ -282,11 +286,106 @@ def summary_to_json(
             "total_occurrences": total,
             "unique_count": len(items),
             "unique_values": [
-                {"value": display_value(sig, truncate), "count": cnt, "percent": (cnt / total) * 100 if total else 0.0}
+                {
+                    "value": display_value(sig, truncate),
+                    "count": cnt,
+                    "percent": (cnt / total_objects) * 100 if total_objects else 0.0
+                }
                 for sig, cnt in to_show
             ],
         }
     return out
+
+
+def summary_to_markdown(
+    counters: Dict[str, Counter], keys: List[str], max_unique: int, truncate: int, total_objects: int
+) -> str:
+    lines = []
+    lines.append(f"# JSON Analysis Summary")
+    lines.append(f"Analyzed **{total_objects}** total objects from the input file.")
+    lines.append("")
+    lines.append("## Summary Metrics Explanation")
+    lines.append("- **Count**: Number of times the given value was observed for that key.")
+    lines.append(f"- **Percent**: `(Count / Total Objects) * 100`. Percentages are relative to the total of **{total_objects}** objects.")
+    lines.append("- **Arrays**: Elements are aggregated under their parent key.")
+    lines.append("- **Container-only keys** (which only ever contain objects/arrays) are omitted from the key list.")
+    lines.append("")
+
+    for key in keys:
+        counter = counters.get(key, Counter())
+        total_observations = sum(counter.values())
+
+        lines.append(f"## Key: `{key}`")
+        lines.append(f"Total value observations: **{total_observations}**")
+        lines.append("")
+
+        items = sorted(counter.items(), key=lambda x: (-x[1], display_value(x[0], truncate)))
+        unique_count = len(items)
+        to_show = items[:max_unique]
+
+        if unique_count > max_unique:
+            lines.append(f"*Showing top **{max_unique}** of **{unique_count}** unique values (by count):*")
+        else:
+            lines.append(f"*Showing **{unique_count}** unique value(s):*")
+        lines.append("")
+
+        # Markdown table
+        lines.append("| Count | Percent | Value |")
+        lines.append("|:------|:--------|:------|")
+
+        for sig, cnt in to_show:
+            pct = (cnt / total_objects) * 100 if total_objects else 0.0
+            valstr = display_value(sig, truncate)
+            # Escape characters for markdown table and wrap in backticks
+            valstr_md = valstr.replace('`', r'\`').replace('|', r'\|').replace('\n', '<br>').replace('\r', '')
+            lines.append(f"| {cnt} | {pct:.2f}% | `{valstr_md}` |")
+
+        lines.append("")  # Add a newline after each key's section
+
+    if not keys:
+        lines.append("No keys selected or found.")
+
+    return "\n".join(lines)
+
+
+def prompt_for_export(
+    counters: Dict[str, Counter], keys: List[str], max_unique: int, truncate: int, total_objects: int, input_path: str
+) -> None:
+    """After terminal output, prompt user to export results to a file."""
+    print("\n" + "-" * 50)
+    try:
+        choice = input("Export these results to a file? (json / md / no): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\nExport cancelled.")
+        return
+
+    if choice not in ['json', 'md']:
+        print("Not exporting.")
+        return
+
+    base_name = os.path.splitext(os.path.basename(input_path))[0]
+    default_filename = f"{base_name}_analysis.{choice}"
+
+    try:
+        filename_input = input(f"Enter filename for export (default: {default_filename}): ").strip()
+        filename = filename_input or default_filename
+    except (EOFError, KeyboardInterrupt):
+        print("\nExport cancelled.")
+        return
+
+    try:
+        if choice == 'json':
+            out = summary_to_json(counters, keys, max_unique, truncate, total_objects)
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(out, f, ensure_ascii=False, indent=2)
+            print(f"Wrote JSON summary to {filename}")
+        elif choice == 'md':
+            md_content = summary_to_markdown(counters, keys, max_unique, truncate, total_objects)
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(md_content)
+            print(f"Wrote Markdown summary to {filename}")
+    except IOError as e:
+        print(f"Error: Could not write to file {filename}: {e}", file=sys.stderr)
 
 
 def parse_args(argv):
@@ -298,8 +397,11 @@ def parse_args(argv):
                    help=f"Truncate displayed values to this length (default {MAX_VALUE_DISPLAY})")
     p.add_argument("--aggregate-arrays", action="store_true",
                    help="(no-op) arrays are always aggregated in this version")
-    p.add_argument("--json-output", type=str, default=None,
-                   help="Write the summary as JSON to this file instead of printing plain text")
+    output_group = p.add_mutually_exclusive_group()
+    output_group.add_argument("--json-output", type=str, default=None,
+                              help="Write the summary as JSON to this file instead of printing plain text")
+    output_group.add_argument("--md-output", type=str, default=None,
+                              help="Write the summary as Markdown to this file instead of printing plain text")
     p.add_argument("--non-interactive", action="store_true",
                    help="Do not prompt; analyze all keys automatically (useful for scripts)")
     return p.parse_args(argv[1:])
@@ -313,7 +415,7 @@ def main(argv):
         return 2
 
     # First pass: discover keys only (container-only keys are filtered out)
-    keys = summarize_file_keys(path)
+    keys, total_keys_pass = summarize_file_keys(path)
     if not keys:
         print("No keys found (empty or invalid JSON).", file=sys.stderr)
         return 1
@@ -321,7 +423,7 @@ def main(argv):
     if args.non_interactive:
         selected_keys = keys
     else:
-        print_keys_menu(keys)
+        print_keys_menu(keys, total_keys_pass)
         try:
             selection = input("> ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -334,14 +436,20 @@ def main(argv):
         selected_keys = [keys[i - 1] for i in indices]
 
     # Second pass: build full counters and present only selected keys
-    counters = summarize_file_full(path)
+    counters, total_objects = summarize_file_full(path)
     if args.json_output:
-        out = summary_to_json(counters, selected_keys, args.max_values, args.truncate)
+        out = summary_to_json(counters, selected_keys, args.max_values, args.truncate, total_objects)
         with open(args.json_output, "w", encoding="utf-8") as f:
             json.dump(out, f, ensure_ascii=False, indent=2)
         print(f"Wrote JSON summary to {args.json_output}")
+    elif args.md_output:
+        md_content = summary_to_markdown(counters, selected_keys, args.max_values, args.truncate, total_objects)
+        with open(args.md_output, "w", encoding="utf-8") as f:
+            f.write(md_content)
+        print(f"Wrote Markdown summary to {args.md_output}")
     else:
-        print_summary_for_keys(counters, selected_keys, args.max_values, args.truncate)
+        print_summary_for_keys(counters, selected_keys, args.max_values, args.truncate, total_objects)
+        prompt_for_export(counters, selected_keys, args.max_values, args.truncate, total_objects, args.input)
     return 0
 
 
