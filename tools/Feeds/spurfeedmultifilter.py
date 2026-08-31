@@ -10,11 +10,22 @@ import requests # For downloading feeds
 import gzip # For decompressing feeds
 import shutil # For moving files safely
 
+# --- Dependency Checks ---
+try:
+    import maxminddb
+except ImportError:
+    print("[-] Error: 'maxminddb' library not found.", file=sys.stderr)
+    print("[-] Please install it using: pip install maxminddb", file=sys.stderr)
+    sys.exit(1)
+import ipaddress
+
 # --- Configuration ---
 # API Token for downloading feeds (if chosen by user)
 API_TOKEN = os.environ.get('TOKEN') 
 
 # --- Functions ---
+# --- Helper Functions ---
+
 def flatten_json(json_data, parent_key='', sep='_'):
     """Flattens a nested JSON object into a single dictionary."""
     items = []
@@ -106,6 +117,105 @@ def get_file_chunks(filepath, min_chunks):
                 
     return chunks
 
+def evaluate_match(json_obj, filter_criteria, overall_match_type, raw_line_for_general_search=""):
+    """Evaluates a single JSON object against all filter criteria."""
+    # Evaluate each filter criterion
+    criterion_results = []
+    for criterion in filter_criteria:
+        key_name = criterion['key']
+        kws = criterion['keywords']
+        match_type_keywords = criterion['match_type_keywords']
+
+        flattened_obj = flatten_json(json_obj)
+        
+        source_value_raw = None
+        
+        # --- Determine Source Value ---
+        if key_name and key_name.startswith('tunnels_'):
+            sub_key = key_name.split('_', 1)[1]
+            relevant_keys = [k for k in flattened_obj.keys() if k.startswith('tunnels_') and k.endswith(f'_{sub_key}')]
+            
+            if relevant_keys:
+                source_values = [str(flattened_obj[k]) for k in relevant_keys if k in flattened_obj and str(flattened_obj[k]).strip().lower() not in ('none', 'null')]
+                source_value_raw = ','.join(source_values)
+            
+        elif key_name:
+            if key_name in flattened_obj:
+                value = flattened_obj.get(key_name)
+                if value is not None:
+                    str_value = str(value).strip().lower()
+                    if str_value not in ('none', 'null'):
+                        source_value_raw = str_value
+            
+        else: # General search
+            source_value_raw = raw_line_for_general_search.lower()
+
+        # --- Evaluate Keywords ---
+        current_kws_match_status = True if match_type_keywords == 'AND' else False
+        
+        for kw in kws:
+            individual_match = False
+            
+            # Handle Negation Logic (!)
+            is_negation = False
+            clean_kw = kw
+            
+            if kw.startswith('!') and kw != '!=empty':
+                is_negation = True
+                clean_kw = kw[1:]
+
+            # 1. Special case: EMPTY / NOT EMPTY
+            if clean_kw == '=empty':
+                if not source_value_raw or not source_value_raw.strip():
+                    individual_match = True
+            elif clean_kw == '!=empty':
+                if source_value_raw and source_value_raw.strip():
+                    individual_match = True
+            
+            # 2. Standard substring/numerical filtering
+            elif source_value_raw:
+                val_str = str(source_value_raw).lower()
+                
+                # Numerical Check
+                num_match = re.match(r'([<>]?=?)\s*(\-?\d+(\.\d+)?)$', clean_kw, re.IGNORECASE)
+                
+                if num_match:
+                    operator = num_match.group(1)
+                    target_num_str = num_match.group(2)
+                    try:
+                        target_num = float(target_num_str)
+                        actual_num = float(val_str)
+                        
+                        if operator == '>' and actual_num > target_num: individual_match = True
+                        elif operator == '<' and actual_num < target_num: individual_match = True
+                        elif operator == '>=' and actual_num >= target_num: individual_match = True
+                        elif operator == '<=' and actual_num <= target_num: individual_match = True
+                        elif (operator == '=' or operator == '') and actual_num == target_num: individual_match = True
+                    except (ValueError, TypeError):
+                        pass 
+                else:
+                    if clean_kw in val_str:
+                        individual_match = True
+            
+            if is_negation:
+                individual_match = not individual_match
+
+            if match_type_keywords == 'AND':
+                if not individual_match:
+                    current_kws_match_status = False
+                    break
+            elif match_type_keywords == 'OR':
+                if individual_match:
+                    current_kws_match_status = True
+                    break
+        
+        criterion_results.append(current_kws_match_status)
+
+    if not criterion_results:
+        return False
+
+    return all(criterion_results) if overall_match_type == 'AND' else any(criterion_results)
+
 def process_file_chunk(args_tuple):
     """
     Processes a specific byte range (chunk) of a file.
@@ -131,123 +241,92 @@ def process_file_chunk(args_tuple):
                 continue
             
             try:
-                # We still parse to check logic, but we won't store the result
                 json_obj = json.loads(line_stripped)
-                
-                # Evaluate each filter criterion
-                criterion_results = [] 
-                for criterion in filter_criteria:
-                    key_name = criterion['key']
-                    kws = criterion['keywords']
-                    match_type_keywords = criterion['match_type_keywords']
-
-                    flattened_obj = flatten_json(json_obj)
-                    
-                    source_value_raw = None 
-                    source_key_found = False
-                    
-                    # --- Determine Source Value ---
-                    if key_name and key_name.startswith('tunnels_'):
-                        sub_key = key_name.split('_', 1)[1]
-                        relevant_keys = [k for k in flattened_obj.keys() if k.startswith('tunnels_') and k.endswith(f'_{sub_key}')]
-                        
-                        if relevant_keys:
-                            source_key_found = True
-                            source_values = [str(flattened_obj[k]) for k in relevant_keys if k in flattened_obj and str(flattened_obj[k]).strip().lower() not in ('none', 'null')]
-                            source_value_raw = ','.join(source_values)
-                        
-                    elif key_name:
-                        if key_name in flattened_obj:
-                            source_key_found = True
-                            value = flattened_obj.get(key_name)
-                            if value is not None:
-                                str_value = str(value).strip().lower()
-                                if str_value not in ('none', 'null'):
-                                    source_value_raw = str_value
-                        
-                    else: # General search
-                        source_key_found = True
-                        source_value_raw = line_stripped.lower()
-
-                    # --- Evaluate Keywords ---
-                    current_kws_match_status = True if match_type_keywords == 'AND' else False
-                    
-                    for kw in kws:
-                        individual_match = False
-                        
-                        # Handle Negation Logic (!)
-                        is_negation = False
-                        clean_kw = kw
-                        
-                        if kw.startswith('!') and kw != '!=empty':
-                            is_negation = True
-                            clean_kw = kw[1:]
-
-                        # 1. Special case: EMPTY / NOT EMPTY
-                        if clean_kw == '=empty':
-                            if not source_value_raw or not source_value_raw.strip():
-                                individual_match = True
-                        elif clean_kw == '!=empty':
-                            if source_value_raw and source_value_raw.strip():
-                                individual_match = True
-                        
-                        # 2. Standard substring/numerical filtering
-                        elif source_value_raw:
-                            val_str = str(source_value_raw).lower()
-                            
-                            # Numerical Check
-                            num_match = re.match(r'([<>]?=?)\s*(\-?\d+(\.\d+)?)$', clean_kw, re.IGNORECASE)
-                            
-                            if num_match:
-                                operator = num_match.group(1)
-                                target_num_str = num_match.group(2)
-                                try:
-                                    target_num = float(target_num_str)
-                                    actual_num = float(val_str)
-                                    
-                                    if operator == '>' and actual_num > target_num: individual_match = True
-                                    elif operator == '<' and actual_num < target_num: individual_match = True
-                                    elif operator == '>=' and actual_num >= target_num: individual_match = True
-                                    elif operator == '<=' and actual_num <= target_num: individual_match = True
-                                    elif (operator == '=' or operator == '') and actual_num == target_num: individual_match = True
-                                except ValueError:
-                                    pass 
-                            else:
-                                if clean_kw in val_str:
-                                    individual_match = True
-                        
-                        if is_negation:
-                            individual_match = not individual_match
-
-                        if match_type_keywords == 'AND':
-                            if not individual_match:
-                                current_kws_match_status = False
-                                break
-                        elif match_type_keywords == 'OR':
-                            if individual_match:
-                                current_kws_match_status = True
-                                break
-                    
-                    criterion_results.append(current_kws_match_status)
-
-                final_match = False
-                if overall_match_type == 'AND':
-                    final_match = all(criterion_results)
-                elif overall_match_type == 'OR':
-                    final_match = any(criterion_results)
-                
-                if final_match:
+                if evaluate_match(json_obj, filter_criteria, overall_match_type, line_stripped):
                     # OPTIMIZATION: Store the raw string, not the dict object
                     matching_lines.append(line_stripped)
 
             except json.JSONDecodeError:
                 pass 
-            except Exception:
+            except Exception as e:
                 pass
             
             if current_byte >= end_byte:
                 break
     return matching_lines, lines_parsed
+
+def process_mmdb_and_filter(mmdb_path, output_path, filter_criteria, overall_match_type):
+    """
+    Opens an MMDB file, iterates through it, filters records, and writes matches to a JSONL file.
+    Returns the count of exported records and total records parsed.
+    """
+    records_exported = 0
+    records_parsed = 0
+    start_time = time.time()
+    last_update_time = start_time
+
+    try:
+        print(f"Opening MMDB file for filtering: {mmdb_path}")
+        with maxminddb.open_database(mmdb_path) as reader, open(output_path, 'w', encoding='utf-8') as outfile:
+            
+            print("Iterating through MMDB... (This may take a while for large files)")
+            
+            # The iterator doesn't have a __len__, so we count as we go for progress.
+            for network, data in reader:
+                records_parsed += 1
+                
+                # For general search, we need a string representation of the record
+                raw_line_for_general_search = json.dumps(data)
+
+                if evaluate_match(data, filter_criteria, overall_match_type, raw_line_for_general_search):
+                    # Add network info to the record before writing
+                    data['network'] = str(network)
+                    outfile.write(json.dumps(data) + '\n')
+                    records_exported += 1
+
+                # UI Update throttling
+                current_time = time.time()
+                if current_time - last_update_time >= 1.0:
+                    elapsed_time = current_time - start_time
+                    records_per_second = records_parsed / elapsed_time if elapsed_time > 0 else 0
+                    sys.stdout.write(f"\r  Parsed: {records_parsed:,} records | Exported: {records_exported:,} | Speed: {records_per_second:.2f} records/s")
+                    sys.stdout.flush()
+                    last_update_time = current_time
+            
+            elapsed_time = time.time() - start_time
+            records_per_second = records_parsed / elapsed_time if elapsed_time > 0 else 0
+            sys.stdout.write(f"\r  Parsed: {records_parsed:,} records | Exported: {records_exported:,} | Speed: {records_per_second:.2f} records/s\n")
+            sys.stdout.flush()
+
+    except Exception as e:
+        print(f"\nError processing MMDB file: {e}", file=sys.stderr)
+        return 0, 0
+        
+    return records_exported, records_parsed
+
+def decompress_file(gzipped_path):
+    """Decompresses a .gz file, removes the original, and returns the new path."""
+    # Correctly remove .gz suffix, e.g. "file.json.gz" becomes "file.json"
+    decompressed_file_path = gzipped_path.rsplit('.gz', 1)[0]
+
+    print(f"Decompressing {gzipped_path} to {decompressed_file_path}...")
+    try:
+        with gzip.open(gzipped_path, 'rb') as f_in:
+            with open(decompressed_file_path, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+
+        print(f"Successfully decompressed to {decompressed_file_path}")
+
+        try:
+            os.remove(gzipped_path)
+            print(f"Deleted gzipped file: {gzipped_path}")
+        except OSError as e:
+            print(f"Error deleting gzipped file {gzipped_path}: {e}", file=sys.stderr)
+
+        return decompressed_file_path
+    except Exception as e:
+        print(f"Error during decompression: {e}", file=sys.stderr)
+        return None
 
 def download_and_decompress_gz_to_file(url, token, output_path):
     """Downloads and decompresses a .gz file."""
@@ -341,6 +420,80 @@ def download_raw_file_to_disk(url, token, output_path):
         print(f"Error during raw file download: {e}", file=sys.stderr)
         return None
 
+def record_iterator(filepath, is_json, sample_size):
+    """Yields records from a JSONL or MMDB file, up to sample_size."""
+    count = 0
+    if is_json:
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    if count >= sample_size:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        yield json.loads(line)
+                        count += 1
+                    except json.JSONDecodeError:
+                        continue
+        except Exception as e:
+            print(f"Warning: Error reading JSON file for sampling: {e}", file=sys.stderr)
+    else: # is MMDB
+        try:
+            with maxminddb.open_database(filepath) as reader:
+                for _, data in reader:
+                    if count >= sample_size: break
+                    yield data
+                    count += 1
+        except Exception as e:
+            print(f"Warning: Error reading MMDB file for sampling: {e}", file=sys.stderr)
+
+def generate_hhmm_range(start_hhmm, end_hhmm, step_minutes=5):
+    """Generates a list of HHMM strings from start to end (inclusive), stepping by step_minutes."""
+    start_dt = datetime.datetime.strptime(start_hhmm, "%H%M")
+    end_dt = datetime.datetime.strptime(end_hhmm, "%H%M")
+    times = []
+    current_dt = start_dt
+    while current_dt <= end_dt:
+        times.append(current_dt.strftime("%H%M"))
+        current_dt += datetime.timedelta(minutes=step_minutes)
+    return times
+
+def download_realtime_range_files(url_template, date_ymd, hhmm_list, base_feed_name, token):
+    """
+    Downloads a series of 5-minute Realtime feed files, each kept as its own
+    separate, still-gzipped .json.gz file (no merging, no decompression).
+    Returns (saved_paths, failed_times).
+    """
+    total_files = len(hhmm_list)
+    saved_paths = []
+    failed_times = []
+    headers = {"Token": token}
+
+    for idx, hhmm in enumerate(hhmm_list, start=1):
+        url = url_template.format(date_ymd, hhmm)
+        output_path = f"{date_ymd}{hhmm}00{base_feed_name}.json.gz"
+        print(f"\n[{idx}/{total_files}] Fetching {hhmm} UTC from: {url}")
+
+        try:
+            response = requests.get(url, headers=headers, stream=True)
+            response.raise_for_status()
+            with open(output_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            saved_paths.append(output_path)
+        except Exception as e:
+            print(f"  Warning: Failed to download {hhmm}: {e}", file=sys.stderr)
+            failed_times.append(hhmm)
+            if os.path.exists(output_path):
+                os.remove(output_path)
+
+    if failed_times:
+        print(f"\nWarning: {len(failed_times)}/{total_files} time slice(s) failed and were skipped: {', '.join(failed_times)}", file=sys.stderr)
+
+    return saved_paths, failed_times
+
 def print_keyword_tips():
     """Prints helpful tips for keyword entry."""
     print("\n  --- KEYWORD SEARCH TIPS ---")
@@ -362,10 +515,13 @@ if __name__ == "__main__":
 
     while True:
         current_date_ymd = datetime.date.today().strftime("%Y%m%d")
-        current_time_hms = None 
+        current_time_hms = None
         decompressed_source_file_path = None
-        base_feed_name = "UnknownFeed" 
-        is_feed_json = True 
+        base_feed_name = "UnknownFeed"
+        is_feed_json = True
+        multi_download_realtime_range = False
+        realtime_range_start = None
+        realtime_range_end = None
         
         use_existing_file_input = input("Do you want to use an existing Spur Feed file? (Y/N): ").strip().upper()
 
@@ -378,7 +534,7 @@ if __name__ == "__main__":
             decompressed_source_file_path = provided_file_path
             print(f"Using provided file: {decompressed_source_file_path}")
 
-            match = re.search(r'(\d{8})(\d{6})?(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetricsAll|DCH|AnonymousIPv6|AnonymousResidentialIPv6|AnonymousResidential|AnonymousResidentialRT|IPSummary|SimilarIPs|AIData)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
+            match = re.search(r'(\d{8})(\d{6})?(AnonRes|AnonResRT|Anonymous|IPGeoMMDB|IPGeoJSON|ServiceMetrics|DCH|AnonymousIPv6|AnonymousResidentialIPv6|AnonymousResidential|AnonymousResidentialRT|IPSummary|SimilarIPs|AIData)\.(json|mmdb|json\.gz)$', os.path.basename(provided_file_path), re.IGNORECASE)
             if match:
                 current_date_ymd = match.group(1)
                 if match.group(2):
@@ -399,9 +555,9 @@ if __name__ == "__main__":
                 if not provided_file_path.lower().endswith('.json') and not provided_file_path.lower().endswith('.json.gz'):
                     is_feed_json = False
 
+            
             if not is_feed_json:
-                print(f"The selected feed is not a JSON file. Exiting.", file=sys.stderr)
-                sys.exit(1)
+                print(f"Info: Non-JSON file detected. Filtering will proceed and output in JSONL format.", file=sys.stderr)
             
             break 
 
@@ -466,8 +622,8 @@ if __name__ == "__main__":
                 "7": {
                     "category": "Service Metrics",
                     "options": {
-                        "1": {"name": "Latest", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
-                        "2": {"name": "Historical", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetricsAll", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
+                        "1": {"name": "Latest", "url": "https://feeds.spur.us/v2/service-metrics/latest.json.gz", "base_feed_name": "ServiceMetrics", "needs_decompression": True, "output_ext": ".json", "is_historical": False, "is_json": True},
+                        "2": {"name": "Historical", "url_template": "https://feeds.spur.us/v2/service-metrics/{}/feed.json.gz", "base_feed_name": "ServiceMetrics", "needs_decompression": True, "output_ext": ".json", "is_historical": True, "is_json": True},
                     }
                 },
                 "8": {
@@ -535,17 +691,44 @@ if __name__ == "__main__":
                         try:
                             datetime.datetime.strptime(historical_date_ymd, "%Y%m%d")
                             if base_feed_name == "AnonymousResidentialRT":
-                                historical_time_hhmm = input("Enter time (HHMM): ").strip()
-                                if re.fullmatch(r'\d{4}', historical_time_hhmm):
-                                    api_url = selected_feed["url_template"].format(historical_date_ymd, historical_time_hhmm)
-                                    current_time_hms = historical_time_hhmm + '00'
-                                    date_input_valid = True
+                                multi_range_choice = input("  Download multiple Realtime feeds across a time range (every 5 min)? (Y/N): ").strip().upper()
+
+                                if multi_range_choice == 'Y':
+                                    range_input_valid = False
+                                    while not range_input_valid:
+                                        start_hhmm = input("  Enter start time (HHMM, e.g., 0000): ").strip()
+                                        end_hhmm = input("  Enter end time (HHMM, e.g., 0300): ").strip()
+                                        if re.fullmatch(r'\d{4}', start_hhmm) and re.fullmatch(r'\d{4}', end_hhmm):
+                                            try:
+                                                start_dt = datetime.datetime.strptime(start_hhmm, "%H%M")
+                                                end_dt = datetime.datetime.strptime(end_hhmm, "%H%M")
+                                                if start_dt.minute % 5 != 0 or end_dt.minute % 5 != 0:
+                                                    print("  Times must fall on 5-minute intervals (00, 05, 10, ... 55) since this feed is published every 5 minutes.")
+                                                elif start_dt > end_dt:
+                                                    print("  Start time must be before or equal to end time.")
+                                                else:
+                                                    realtime_range_start = start_hhmm
+                                                    realtime_range_end = end_hhmm
+                                                    multi_download_realtime_range = True
+                                                    current_time_hms = f"{start_hhmm}-{end_hhmm}"
+                                                    range_input_valid = True
+                                                    date_input_valid = True
+                                            except ValueError:
+                                                print("  Invalid time value.")
+                                        else:
+                                            print("  Invalid format. Use HHMM (e.g., 0000, 1345).")
                                 else:
-                                    print("Invalid time format.")
+                                    historical_time_hhmm = input("Enter time (HHMM): ").strip()
+                                    if re.fullmatch(r'\d{4}', historical_time_hhmm):
+                                        api_url = selected_feed["url_template"].format(historical_date_ymd, historical_time_hhmm)
+                                        current_time_hms = historical_time_hhmm + '00'
+                                        date_input_valid = True
+                                    else:
+                                        print("Invalid time format.")
                             else:
                                 api_url = selected_feed["url_template"].format(historical_date_ymd)
                                 date_input_valid = True
-                            
+
                             if date_input_valid:
                                 current_date_ymd = historical_date_ymd
                         except ValueError:
@@ -555,38 +738,57 @@ if __name__ == "__main__":
             
             download_successful = False
             download_filename_temp = f"{current_date_ymd}"
-            
+
             temp_base_feed_name = base_feed_name
             if base_feed_name in ["AnonResRT", "AnonymousResidentialRT"]:
                 if not current_time_hms:
                     current_time_hms = datetime.datetime.now().strftime("%H%M%S")
                 download_filename_temp += f"{current_time_hms}"
-            
+
             if base_feed_name == "AnonymousResidentialHist": temp_base_feed_name = "AnonymousResidential"
-            elif base_feed_name == "ServiceMetricsAllHist": temp_base_feed_name = "ServiceMetricsAll"
             elif base_feed_name == "AnonymousHist": temp_base_feed_name = "Anonymous"
-            
+
             download_filename_temp += temp_base_feed_name
 
-            if needs_decompression:
-                download_filename_temp += ".json.gz"
-                decompressed_source_file_path = download_and_decompress_gz_to_file(api_url, os.environ.get('TOKEN'), download_filename_temp)
-                if decompressed_source_file_path is not None:
-                    download_successful = True
+            if multi_download_realtime_range:
+                hhmm_list = generate_hhmm_range(realtime_range_start, realtime_range_end)
+                print(f"\nDownloading {len(hhmm_list)} Realtime time slices from {realtime_range_start} to {realtime_range_end} UTC on {current_date_ymd}...")
+                saved_paths, failed_times = download_realtime_range_files(
+                    selected_feed["url_template"], current_date_ymd, hhmm_list, base_feed_name, os.environ.get('TOKEN')
+                )
+
+                if saved_paths:
+                    print(f"\nDownloaded {len(saved_paths)}/{len(hhmm_list)} time slices (kept separate and gzipped):")
+                    for path in saved_paths:
+                        print(f"  - {path}")
+                else:
+                    print("Download failed. Exiting.", file=sys.stderr)
+                    sys.exit(1)
+
+                print("\nScript finished.")
+                sys.exit(0)
             else:
-                download_filename_temp += output_ext
-                decompressed_source_file_path = download_raw_file_to_disk(api_url, os.environ.get('TOKEN'), download_filename_temp)
-                if decompressed_source_file_path is not None:
+                # Unified download logic: just download the file, don't decompress yet.
+                if needs_decompression:
+                    download_filename_temp += ".json.gz"
+                else:
+                    download_filename_temp += output_ext
+
+                source_file_path = download_raw_file_to_disk(api_url, os.environ.get('TOKEN'), download_filename_temp)
+
+                if source_file_path:
                     download_successful = True
-            
+                    decompressed_source_file_path = source_file_path
+                else:
+                    download_successful = False
+
             if not download_successful:
-                retry_input = input("Download failed. Try again? (Y/N): ").strip().upper()
-                if retry_input == 'Y': continue
-                else: sys.exit(1)
+                print("Download failed. Exiting.", file=sys.stderr)
+                sys.exit(1)
 
             if not is_feed_json:
-                print(f"File at: {decompressed_source_file_path}. Script finished (non-JSON).")
-                sys.exit(0)
+                print(f"File available at: {decompressed_source_file_path}. This is not a JSON file, but can be filtered.")
+                # Continue to filtering options
             
             break 
         else:
@@ -597,10 +799,6 @@ if __name__ == "__main__":
         print(f"Critical Error: File '{decompressed_source_file_path}' not found. Exiting.", file=sys.stderr)
         sys.exit(1)
     
-    if not decompressed_source_file_path.lower().endswith('.json') and is_feed_json:
-        print("Error: Expected JSON file.", file=sys.stderr)
-        sys.exit(1)
-
     filter_criteria = []
     
     raw_filter_choice = input("\nDo you want to filter the data? (Y/N) [Default: Y]: ").strip().upper()
@@ -608,6 +806,20 @@ if __name__ == "__main__":
 
     if perform_initial_filter_choice == 'Y':
         while True:
+            # Decompress the file if it's gzipped, now that we've confirmed filtering
+            if decompressed_source_file_path.lower().endswith('.gz'):
+                decompressed_path = decompress_file(decompressed_source_file_path)
+                if not decompressed_path:
+                    print("Decompression failed. Exiting.", file=sys.stderr)
+                    sys.exit(1)
+                decompressed_source_file_path = decompressed_path
+
+            # Allow MMDB files to be filtered in addition to JSON
+            if not decompressed_source_file_path.lower().endswith(('.json', '.mmdb')):
+                print(f"Error: The file '{os.path.basename(decompressed_source_file_path)}' is not a supported format for filtering (.json or .mmdb).", file=sys.stderr)
+                sys.exit(1)
+
+
             current_filter_key = None 
             current_keywords = []
             current_match_type_keywords = 'AND' 
@@ -616,37 +828,24 @@ if __name__ == "__main__":
 
             if perform_key_specific_filter_choice == 'Y':
                 # New prompt for key sampling size
-                key_sample_size_str = input("  How many lines to sample for keys? (Default 500000): ").strip()
+                key_sample_size_str = input("  How many lines/records to sample for keys? (Default 500000): ").strip()
                 key_sample_size = 500000
                 if key_sample_size_str.isdigit():
                     key_sample_size = int(key_sample_size_str)
                 
-                print(f"\n--- Analyzing first {key_sample_size} lines for filterable keys ---") 
-                sample_lines = []
-                try:
-                    with open(decompressed_source_file_path, 'r', encoding='utf-8') as f_sample:
-                        for _ in range(key_sample_size): 
-                            line = f_sample.readline()
-                            if not line: break
-                            sample_lines.append(line)
-                except Exception:
-                    sample_lines = []
-
+                print(f"\n--- Analyzing first {key_sample_size} records for filterable keys ---") 
+                
                 suggested_keys = set()
                 flattened_keys = set()
-                for line in sample_lines:
-                    try:
-                        obj = json.loads(line.strip())
-                        temp_flattened = flatten_json(obj)
-                        flattened_keys.update(temp_flattened.keys())
-                        for key in temp_flattened.keys():
-                            match = re.match(r'(.+?)_\d+_(.+)', key)
-                            if match:
-                                suggested_keys.add(f"{match.group(1)}_{match.group(2)}")
-                            else:
-                                suggested_keys.add(key)
-                    except json.JSONDecodeError:
-                        pass
+                for record in record_iterator(decompressed_source_file_path, is_feed_json, key_sample_size):
+                    temp_flattened = flatten_json(record)
+                    flattened_keys.update(temp_flattened.keys())
+                    for key in temp_flattened.keys():
+                        match = re.match(r'(.+?)_\d+_(.+)', key)
+                        if match:
+                            suggested_keys.add(f"{match.group(1)}_{match.group(2)}")
+                        else:
+                            suggested_keys.add(key)
                 
                 if suggested_keys:
                     print("\nAvailable keys for filtering:") 
@@ -660,23 +859,12 @@ if __name__ == "__main__":
                 see_sample_values = input(f"  See sample values for '{current_filter_key}'? (Y/N): ").strip().upper()
                 if see_sample_values == 'Y':
                     # New prompt for value sampling size
-                    val_sample_size_str = input("  How many lines to sample for values? (Default 500000): ").strip()
+                    val_sample_size_str = input("  How many records to sample for values? (Default 500000): ").strip()
                     val_sample_size = 500000
                     if val_sample_size_str.isdigit():
                         val_sample_size = int(val_sample_size_str)
 
-                    print(f"\n--- Analyzing first {val_sample_size} lines for values ---")
-                    
-                    # Re-read file for value sampling (sample_lines might be too small or different)
-                    val_sample_lines = []
-                    try:
-                        with open(decompressed_source_file_path, 'r', encoding='utf-8') as f_sample:
-                            for _ in range(val_sample_size):
-                                line = f_sample.readline()
-                                if not line: break
-                                val_sample_lines.append(line)
-                    except Exception:
-                        val_sample_lines = []
+                    print(f"\n--- Analyzing first {val_sample_size} records for values ---")
                         
                     unique_values = set()
                     target_flattened_keys = []
@@ -691,24 +879,20 @@ if __name__ == "__main__":
                             target_flattened_keys.append(current_filter_key)
                     
                     if target_flattened_keys:
-                        for line in val_sample_lines:
-                            try:
-                                obj = json.loads(line.strip())
-                                flattened_obj = flatten_json(obj)
-                                for f_key in target_flattened_keys:
-                                    value = flattened_obj.get(f_key)
-                                    if value is not None:
-                                        if isinstance(value, str):
-                                            for individual_value in value.split(','):
-                                                unique_values.add(individual_value.strip())
-                                        else:
-                                            unique_values.add(str(value).strip())
-                            except json.JSONDecodeError: pass
+                        for record in record_iterator(decompressed_source_file_path, is_feed_json, val_sample_size):
+                            flattened_obj = flatten_json(record)
+                            for f_key in target_flattened_keys:
+                                value = flattened_obj.get(f_key)
+                                if value is not None:
+                                    if isinstance(value, str):
+                                        for individual_value in value.split(','):
+                                            unique_values.add(individual_value.strip())
+                                    else:
+                                        unique_values.add(str(value).strip())
 
                     if unique_values:
                         print("Unique values found:")
-                        for value in sorted(list(unique_values)):
-                            print(f"  - {value}")
+                        for value in sorted(list(unique_values)): print(f"  - {value}")
                         print("\n")
                     else:
                         print("No values found in sample.\n")
@@ -810,60 +994,67 @@ if __name__ == "__main__":
     if perform_filter == 'Y':
         print(f"Filtering content...")
     
-    records_exported_count = 0
-    total_records_parsed = 0
-    chunks_completed = 0
     start_time = time.time()
-    last_ui_update_time = start_time  # <-- Added a dedicated UI timer
-    
-    NUM_PARALLEL_PROCESSORS = os.cpu_count() if os.cpu_count() else 4
 
-    try:
-        with open(output_file_path, 'w', encoding='utf-8') as outfile:
-            # 1. Get the chunks (Optimized for 64MB targets)
-            chunks = get_file_chunks(decompressed_source_file_path, NUM_PARALLEL_PROCESSORS)
-            total_chunks = len(chunks)
-            
-            # 2. Update Feedback: Show the user we are using safe chunking
-            print(f"Using {NUM_PARALLEL_PROCESSORS} parallel processors to process {total_chunks} data chunks (Optimized for Memory Safety).")
-            
-            with multiprocessing.Pool(processes=NUM_PARALLEL_PROCESSORS) as pool:
-                results_iterator = pool.imap_unordered(
-                    process_file_chunk,
-                    [(decompressed_source_file_path, start, end, filter_criteria, overall_match_type) for start, end in chunks]
-                )
+    if is_feed_json:
+        records_exported_count = 0
+        total_records_parsed = 0
+        chunks_completed = 0
+        last_ui_update_time = start_time
+        
+        NUM_PARALLEL_PROCESSORS = os.cpu_count() if os.cpu_count() else 4
+
+        try:
+            with open(output_file_path, 'w', encoding='utf-8') as outfile:
+                chunks = get_file_chunks(decompressed_source_file_path, NUM_PARALLEL_PROCESSORS)
+                total_chunks = len(chunks)
                 
-                for matching_lines_in_chunk, lines_parsed_in_chunk in results_iterator:
-                    chunks_completed += 1
-                    total_records_parsed += lines_parsed_in_chunk
-                    try: 
-                        # Write raw strings directly (Memory Efficient)
-                        for line in matching_lines_in_chunk:
-                            outfile.write(line + '\n')
-                            records_exported_count += 1
-                        
-                        # 3. TIME-BASED UI THROTTLING (Max 2 updates per second)
-                        current_time = time.time()
-                        if current_time - last_ui_update_time >= 0.5 or chunks_completed == total_chunks:
-                            elapsed_time = current_time - start_time
-                            records_per_second = total_records_parsed / elapsed_time if elapsed_time > 0 else 0
-                            progress_pct = (chunks_completed / total_chunks) * 100
-                            sys.stdout.write(f"\r  Progress: {progress_pct:.1f}% ({chunks_completed}/{total_chunks} chunks) | Exported: {records_exported_count} records | Speed: {records_per_second:.2f} parsed/s")
-                            sys.stdout.flush()
-                            last_ui_update_time = current_time  # Reset the UI timer
+                print(f"Using {NUM_PARALLEL_PROCESSORS} parallel processors to process {total_chunks} data chunks (Optimized for Memory Safety).")
+                
+                with multiprocessing.Pool(processes=NUM_PARALLEL_PROCESSORS) as pool:
+                    results_iterator = pool.imap_unordered(
+                        process_file_chunk,
+                        [(decompressed_source_file_path, start, end, filter_criteria, overall_match_type) for start, end in chunks]
+                    )
+                    
+                    for matching_lines_in_chunk, lines_parsed_in_chunk in results_iterator:
+                        chunks_completed += 1
+                        total_records_parsed += lines_parsed_in_chunk
+                        try: 
+                            for line in matching_lines_in_chunk:
+                                outfile.write(line + '\n')
+                                records_exported_count += 1
+                            
+                            current_time = time.time()
+                            if current_time - last_ui_update_time >= 0.5 or chunks_completed == total_chunks:
+                                elapsed_time = current_time - start_time
+                                records_per_second = total_records_parsed / elapsed_time if elapsed_time > 0 else 0
+                                progress_pct = (chunks_completed / total_chunks) * 100
+                                sys.stdout.write(f"\r  Progress: {progress_pct:.1f}% ({chunks_completed}/{total_chunks} chunks) | Exported: {records_exported_count:,} records | Speed: {records_per_second:,.0f} parsed/s")
+                                sys.stdout.flush()
+                                last_ui_update_time = current_time
+                        except Exception as exc:
+                            print(f"\nError processing chunk: {exc}", file=sys.stderr)
+                
+                print() # Newline after progress bar
+                print(f"Successfully exported {records_exported_count:,} records to {output_file_path}.")
 
-                    except Exception as exc:
-                        print(f"\nError processing chunk: {exc}", file=sys.stderr)
-            
-            # Print a newline to ensure the final success message is on a new line
-            print()
-            print(f"Successfully exported {records_exported_count} records to {output_file_path}.")
-
-    except Exception as e:
-        print(f"\nError during export: {e}", file=sys.stderr)
-        sys.exit(1)
+        except Exception as e:
+            print(f"\nError during export: {e}", file=sys.stderr)
+            sys.exit(1)
+    else: # It's an MMDB file
+        records_exported_count, total_records_parsed = process_mmdb_and_filter(
+            decompressed_source_file_path,
+            output_file_path,
+            filter_criteria,
+            overall_match_type
+        )
+        if total_records_parsed > 0:
+             print(f"Successfully exported {records_exported_count:,} records to {output_file_path}.")
+        else:
+             print(f"Processing finished, but no records were exported.", file=sys.stderr)
 
     print("\nScript finished.")
     total_elapsed_seconds = time.time() - script_start_time
-    print(f"\nTotal execution time: {int(total_elapsed_seconds // 60)} Minutes {int(total_elapsed_seconds % 60)} Seconds")
+    print(f"Total execution time: {int(total_elapsed_seconds // 60)} Minutes {int(total_elapsed_seconds % 60)} Seconds")
     sys.exit(0)
