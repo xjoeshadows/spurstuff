@@ -429,7 +429,7 @@ if __name__ == "__main__":
 
         if perform_historic_lookup:
             print("\n--- Missing Timestamp Handling ---")
-            print("Some rows may be missing a usable date/timestamp value.")
+            print("If any rows turn out to be missing a usable date/timestamp value, how should they be handled?")
             print("  [1] Return no data for those IPs (skip the lookup entirely)")
             print(f"  [2] Do a current (real-time) lookup instead, and record today's date ({run_date_str}) as their timestamp")
 
