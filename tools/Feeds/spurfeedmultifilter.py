@@ -328,53 +328,106 @@ def decompress_file(gzipped_path):
         print(f"Error during decompression: {e}", file=sys.stderr)
         return None
 
-def download_and_decompress_gz_to_file(url, token, output_path):
-    """Downloads and decompresses a .gz file."""
-    headers = {"Token": token}
-    try:
-        print(f"Downloading from: {url}")
-        response = requests.get(url, headers=headers, stream=True)
-        response.raise_for_status()
+def download_with_resume(url, token, output_path, max_retries=10, connect_timeout=15, stall_timeout=30):
+    """
+    Downloads a file to output_path, automatically resuming after network
+    interruptions using HTTP Range requests.
 
-        total_size = int(response.headers.get('content-length', 0))
-        downloaded_size = 0
-        start_time = time.time()
-        last_update_time = start_time
+    A per-chunk read timeout (stall_timeout) is used to detect a connection
+    that has gone silent (no bytes arriving, no error raised) rather than
+    hanging forever with no visible progress. On any network error the
+    partial file is kept on disk and the download is retried (with backoff),
+    resuming from the last byte written. If every retry is exhausted, the
+    partial file is still left in place so a later re-run can pick up where
+    this one left off.
+    """
+    attempt = 0
+    while attempt < max_retries:
+        attempt += 1
+        resume_from = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+        headers = {"Token": token}
+        if resume_from > 0:
+            headers["Range"] = f"bytes={resume_from}-"
 
-        with open(output_path, 'wb') as outfile:
-            for chunk in response.iter_content(chunk_size=8192):
-                outfile.write(chunk)
-                downloaded_size += len(chunk)
-                current_time = time.time()
-                if current_time - last_update_time >= 5:
-                    percentage = (downloaded_size / total_size) * 100 if total_size else 0
-                    elapsed_time = current_time - start_time
-                    rate = (downloaded_size / (1024 * 1024)) / elapsed_time if elapsed_time else 0
-                    sys.stdout.write(f"\rDownloading... {percentage:.2f}% ({downloaded_size / (1024 * 1024):.2f} MB / {total_size / (1024 * 1024):.2f} MB) at {rate:.2f} MB/s")
-                    sys.stdout.flush()
-                    last_update_time = current_time
+        try:
+            response = requests.get(url, headers=headers, stream=True, timeout=(connect_timeout, stall_timeout))
+
+            if response.status_code == 416:
+                # Server says the range we already have covers the whole file.
+                response.close()
+                return output_path
+
+            resuming = resume_from > 0 and response.status_code == 206
+            if resume_from > 0 and not resuming:
+                print("  Server did not honor the resume request; restarting this file from scratch.", file=sys.stderr)
+
+            response.raise_for_status()
+
+            content_range = response.headers.get('content-range')
+            if content_range and '/' in content_range:
+                total_size = int(content_range.rsplit('/', 1)[-1])
+            else:
+                total_size = (resume_from if resuming else 0) + int(response.headers.get('content-length', 0))
+
+            downloaded_size = resume_from if resuming else 0
+            start_time = time.time()
+            last_update_time = start_time
+
+            if resuming:
+                print(f"  Resuming download from {downloaded_size / (1024 * 1024):.2f} MB...")
+
+            with open(output_path, 'ab' if resuming else 'wb') as outfile:
+                for chunk in response.iter_content(chunk_size=8192):
+                    outfile.write(chunk)
+                    downloaded_size += len(chunk)
+                    current_time = time.time()
+                    if current_time - last_update_time >= 5:
+                        percentage = (downloaded_size / total_size) * 100 if total_size else 0
+                        elapsed_time = current_time - start_time
+                        rate = (downloaded_size / (1024 * 1024)) / elapsed_time if elapsed_time else 0
+                        sys.stdout.write(f"\rDownloading... {percentage:.2f}% ({downloaded_size / (1024 * 1024):.2f} MB / {total_size / (1024 * 1024):.2f} MB) at {rate:.2f} MB/s")
+                        sys.stdout.flush()
+                        last_update_time = current_time
+
             sys.stdout.write("\n")
             sys.stdout.flush()
-            
-        print(f"Successfully downloaded gzipped file to: {output_path}")
+            return output_path
 
-        decompressed_file_path = os.path.splitext(output_path)[0]
-        if not decompressed_file_path.lower().endswith('.json'):
-            decompressed_file_path += '.json'
+        except (requests.exceptions.RequestException, OSError) as e:
+            wait_time = min(60, 5 * attempt)
+            print(f"\n  Network error ({e}). Retrying in {wait_time}s... (attempt {attempt}/{max_retries})", file=sys.stderr)
+            if attempt < max_retries:
+                time.sleep(wait_time)
 
+    print(f"  Giving up after {max_retries} attempts. Partial file kept at '{output_path}' -- re-running will resume it.", file=sys.stderr)
+    return None
+
+def download_and_decompress_gz_to_file(url, token, output_path):
+    """Downloads (with automatic resume) and decompresses a .gz file."""
+    print(f"Downloading from: {url}")
+    if not download_with_resume(url, token, output_path):
+        return None
+
+    print(f"Successfully downloaded gzipped file to: {output_path}")
+
+    decompressed_file_path = os.path.splitext(output_path)[0]
+    if not decompressed_file_path.lower().endswith('.json'):
+        decompressed_file_path += '.json'
+
+    try:
         print(f"Decompressing {output_path} to {decompressed_file_path}...")
-        
+
         with gzip.open(output_path, 'rb') as f_in:
             with open(decompressed_file_path, 'wb') as f_out:
-                buffer_size = 1024 * 1024 
+                buffer_size = 1024 * 1024
                 while True:
                     chunk = f_in.read(buffer_size)
                     if not chunk:
                         break
                     f_out.write(chunk)
-        
+
         print(f"Successfully decompressed to {decompressed_file_path}")
-        
+
         try:
             os.remove(output_path)
             print(f"Deleted temporary gzipped file: {output_path}")
@@ -383,42 +436,16 @@ def download_and_decompress_gz_to_file(url, token, output_path):
 
         return decompressed_file_path
     except Exception as e:
-        print(f"Error during download/decompression: {e}", file=sys.stderr)
+        print(f"Error during decompression: {e}", file=sys.stderr)
         return None
 
 def download_raw_file_to_disk(url, token, output_path):
-    """Downloads a raw file."""
-    headers = {"Token": token}
-    try:
-        print(f"Downloading raw file from: {url}")
-        response = requests.get(url, headers=headers, stream=True)
-        response.raise_for_status()
-
-        total_size = int(response.headers.get('content-length', 0))
-        downloaded_size = 0
-        start_time = time.time()
-        last_update_time = start_time
-
-        with open(output_path, 'wb') as outfile:
-            for chunk in response.iter_content(chunk_size=8192):
-                outfile.write(chunk)
-                downloaded_size += len(chunk)
-                current_time = time.time()
-                if current_time - last_update_time >= 5:
-                    percentage = (downloaded_size / total_size) * 100 if total_size else 0
-                    elapsed_time = current_time - start_time
-                    rate = (downloaded_size / (1024 * 1024)) / elapsed_time if elapsed_time else 0
-                    sys.stdout.write(f"\rDownloading... {percentage:.2f}% ({downloaded_size / (1024 * 1024):.2f} MB / {total_size / (1024 * 1024):.2f} MB) at {rate:.2f} MB/s")
-                    sys.stdout.flush()
-                    last_update_time = current_time
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-
+    """Downloads a raw file, automatically resuming after network interruptions."""
+    print(f"Downloading raw file from: {url}")
+    result = download_with_resume(url, token, output_path)
+    if result:
         print(f"Successfully downloaded raw file to: {output_path}")
-        return output_path
-    except Exception as e:
-        print(f"Error during raw file download: {e}", file=sys.stderr)
-        return None
+    return result
 
 def record_iterator(filepath, is_json, sample_size):
     """Yields records from a JSONL or MMDB file, up to sample_size."""
@@ -469,25 +496,16 @@ def download_realtime_range_files(url_template, date_ymd, hhmm_list, base_feed_n
     total_files = len(hhmm_list)
     saved_paths = []
     failed_times = []
-    headers = {"Token": token}
 
     for idx, hhmm in enumerate(hhmm_list, start=1):
         url = url_template.format(date_ymd, hhmm)
-        output_path = f"{date_ymd}{hhmm}00{base_feed_name}.json.gz"
+        output_path = f"{date_ymd}{hhmm}{base_feed_name}.json.gz"
         print(f"\n[{idx}/{total_files}] Fetching {hhmm} UTC from: {url}")
 
-        try:
-            response = requests.get(url, headers=headers, stream=True)
-            response.raise_for_status()
-            with open(output_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
+        if download_with_resume(url, token, output_path):
             saved_paths.append(output_path)
-        except Exception as e:
-            print(f"  Warning: Failed to download {hhmm}: {e}", file=sys.stderr)
+        else:
             failed_times.append(hhmm)
-            if os.path.exists(output_path):
-                os.remove(output_path)
 
     if failed_times:
         print(f"\nWarning: {len(failed_times)}/{total_files} time slice(s) failed and were skipped: {', '.join(failed_times)}", file=sys.stderr)
