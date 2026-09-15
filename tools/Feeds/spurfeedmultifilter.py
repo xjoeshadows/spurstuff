@@ -487,6 +487,17 @@ def generate_hhmm_range(start_hhmm, end_hhmm, step_minutes=5):
         current_dt += datetime.timedelta(minutes=step_minutes)
     return times
 
+def generate_date_range(start_ymd, end_ymd):
+    """Generates a list of YYYYMMDD strings from start to end (inclusive)."""
+    start_dt = datetime.datetime.strptime(start_ymd, "%Y%m%d")
+    end_dt = datetime.datetime.strptime(end_ymd, "%Y%m%d")
+    dates = []
+    current_dt = start_dt
+    while current_dt <= end_dt:
+        dates.append(current_dt.strftime("%Y%m%d"))
+        current_dt += datetime.timedelta(days=1)
+    return dates
+
 def download_realtime_range_files(url_template, date_ymd, hhmm_list, base_feed_name, token):
     """
     Downloads a series of 5-minute Realtime feed files, each kept as its own
@@ -511,6 +522,32 @@ def download_realtime_range_files(url_template, date_ymd, hhmm_list, base_feed_n
         print(f"\nWarning: {len(failed_times)}/{total_files} time slice(s) failed and were skipped: {', '.join(failed_times)}", file=sys.stderr)
 
     return saved_paths, failed_times
+
+def download_historical_date_range_files(url_template, date_list, base_feed_name, needs_decompression, output_ext, token):
+    """
+    Downloads a series of historical feed files, one per date in date_list.
+    Each file is kept as its own, still-gzipped (or raw, for .mmdb) file --
+    no merging, no decompression. Returns (saved_paths, failed_dates).
+    """
+    total_files = len(date_list)
+    saved_paths = []
+    failed_dates = []
+
+    for idx, date_ymd in enumerate(date_list, start=1):
+        url = url_template.format(date_ymd)
+        ext = ".json.gz" if needs_decompression else output_ext
+        output_path = f"{date_ymd}{base_feed_name}{ext}"
+        print(f"\n[{idx}/{total_files}] Fetching {date_ymd} from: {url}")
+
+        if download_with_resume(url, token, output_path):
+            saved_paths.append(output_path)
+        else:
+            failed_dates.append(date_ymd)
+
+    if failed_dates:
+        print(f"\nWarning: {len(failed_dates)}/{total_files} date(s) failed and were skipped: {', '.join(failed_dates)}", file=sys.stderr)
+
+    return saved_paths, failed_dates
 
 def print_keyword_tips():
     """Prints helpful tips for keyword entry."""
@@ -702,57 +739,158 @@ if __name__ == "__main__":
             is_feed_json = selected_feed["is_json"]
 
             if is_historical:
-                date_input_valid = False
-                while not date_input_valid:
-                    historical_date_ymd = input("\nEnter date (YYYYMMDD): ").strip()
-                    if re.fullmatch(r'\d{8}', historical_date_ymd):
-                        try:
-                            datetime.datetime.strptime(historical_date_ymd, "%Y%m%d")
-                            if base_feed_name == "AnonymousResidentialRT":
-                                multi_range_choice = input("  Download multiple Realtime feeds across a time range (every 5 min)? (Y/N): ").strip().upper()
+                date_range_choice = input("\nDownload a single date or a date range of historical feeds? (S/R) [Default: S]: ").strip().upper()
 
-                                if multi_range_choice == 'Y':
-                                    range_input_valid = False
-                                    while not range_input_valid:
-                                        start_hhmm = input("  Enter start time (HHMM, e.g., 0000): ").strip()
-                                        end_hhmm = input("  Enter end time (HHMM, e.g., 0300): ").strip()
-                                        if re.fullmatch(r'\d{4}', start_hhmm) and re.fullmatch(r'\d{4}', end_hhmm):
-                                            try:
-                                                start_dt = datetime.datetime.strptime(start_hhmm, "%H%M")
-                                                end_dt = datetime.datetime.strptime(end_hhmm, "%H%M")
-                                                if start_dt.minute % 5 != 0 or end_dt.minute % 5 != 0:
-                                                    print("  Times must fall on 5-minute intervals (00, 05, 10, ... 55) since this feed is published every 5 minutes.")
-                                                elif start_dt > end_dt:
-                                                    print("  Start time must be before or equal to end time.")
-                                                else:
-                                                    realtime_range_start = start_hhmm
-                                                    realtime_range_end = end_hhmm
-                                                    multi_download_realtime_range = True
-                                                    current_time_hms = f"{start_hhmm}-{end_hhmm}"
-                                                    range_input_valid = True
-                                                    date_input_valid = True
-                                            except ValueError:
-                                                print("  Invalid time value.")
-                                        else:
-                                            print("  Invalid format. Use HHMM (e.g., 0000, 1345).")
+                if date_range_choice == 'R':
+                    # --- Multi-date historical download (bypasses filtering, mirrors the RT time-range behavior below) ---
+                    date_range_valid = False
+                    while not date_range_valid:
+                        date_range_input = input("Enter date range (YYYYMMDD-YYYYMMDD): ").strip()
+                        range_match = re.fullmatch(r'(\d{8})-(\d{8})', date_range_input)
+                        if range_match:
+                            range_start_ymd, range_end_ymd = range_match.groups()
+                            try:
+                                range_start_dt = datetime.datetime.strptime(range_start_ymd, "%Y%m%d")
+                                range_end_dt = datetime.datetime.strptime(range_end_ymd, "%Y%m%d")
+                                if range_start_dt > range_end_dt:
+                                    print("Start date must be before or equal to end date.")
                                 else:
-                                    historical_time_hhmm = input("Enter time (HHMM): ").strip()
-                                    if re.fullmatch(r'\d{4}', historical_time_hhmm):
-                                        api_url = selected_feed["url_template"].format(historical_date_ymd, historical_time_hhmm)
-                                        current_time_hms = historical_time_hhmm + '00'
-                                        date_input_valid = True
-                                    else:
-                                        print("Invalid time format.")
-                            else:
-                                api_url = selected_feed["url_template"].format(historical_date_ymd)
-                                date_input_valid = True
+                                    date_range_valid = True
+                            except ValueError:
+                                print("Invalid date.")
+                        else:
+                            print("Invalid format. Use YYYYMMDD-YYYYMMDD (e.g., 20260101-20260107).")
 
-                            if date_input_valid:
-                                current_date_ymd = historical_date_ymd
-                        except ValueError:
-                            print("Invalid date.")
+                    date_list = generate_date_range(range_start_ymd, range_end_ymd)
+                    token = os.environ.get('TOKEN')
+                    all_saved_paths = []
+                    all_failed = []
+
+                    if base_feed_name == "AnonymousResidentialRT":
+                        multi_range_choice = input("  For each date, download multiple Realtime feeds across a time range (every 5 min)? (Y/N): ").strip().upper()
+
+                        if multi_range_choice == 'Y':
+                            range_input_valid = False
+                            while not range_input_valid:
+                                start_hhmm = input("  Enter start time (HHMM, e.g., 0000): ").strip()
+                                end_hhmm = input("  Enter end time (HHMM, e.g., 2355): ").strip()
+                                if re.fullmatch(r'\d{4}', start_hhmm) and re.fullmatch(r'\d{4}', end_hhmm):
+                                    try:
+                                        start_dt = datetime.datetime.strptime(start_hhmm, "%H%M")
+                                        end_dt = datetime.datetime.strptime(end_hhmm, "%H%M")
+                                        if start_dt.minute % 5 != 0 or end_dt.minute % 5 != 0:
+                                            print("  Times must fall on 5-minute intervals (00, 05, 10, ... 55) since this feed is published every 5 minutes.")
+                                        elif start_dt > end_dt:
+                                            print("  Start time must be before or equal to end time.")
+                                        else:
+                                            range_input_valid = True
+                                    except ValueError:
+                                        print("  Invalid time value.")
+                                else:
+                                    print("  Invalid format. Use HHMM (e.g., 0000, 1345).")
+
+                            hhmm_list = generate_hhmm_range(start_hhmm, end_hhmm)
+                            for date_ymd in date_list:
+                                print(f"\n=== Downloading {date_ymd} ({start_hhmm}-{end_hhmm} UTC) ===")
+                                saved_paths, failed_times = download_realtime_range_files(
+                                    selected_feed["url_template"], date_ymd, hhmm_list, base_feed_name, token
+                                )
+                                all_saved_paths.extend(saved_paths)
+                                all_failed.extend(f"{date_ymd} {t}" for t in failed_times)
+                        else:
+                            time_input_valid = False
+                            while not time_input_valid:
+                                historical_time_hhmm = input("  Enter time (HHMM) to fetch for each date: ").strip()
+                                if re.fullmatch(r'\d{4}', historical_time_hhmm):
+                                    try:
+                                        datetime.datetime.strptime(historical_time_hhmm, "%H%M")
+                                        time_input_valid = True
+                                    except ValueError:
+                                        print("  Invalid time value.")
+                                else:
+                                    print("  Invalid format. Use HHMM (e.g., 0000, 1345).")
+
+                            for idx, date_ymd in enumerate(date_list, start=1):
+                                url = selected_feed["url_template"].format(date_ymd, historical_time_hhmm)
+                                output_path = f"{date_ymd}{historical_time_hhmm}00{base_feed_name}.json.gz"
+                                print(f"\n[{idx}/{len(date_list)}] Fetching {date_ymd} {historical_time_hhmm} UTC from: {url}")
+                                if download_with_resume(url, token, output_path):
+                                    all_saved_paths.append(output_path)
+                                else:
+                                    all_failed.append(f"{date_ymd} {historical_time_hhmm}")
                     else:
-                        print("Invalid format.")
+                        needs_decompression = selected_feed["needs_decompression"]
+                        output_ext = selected_feed["output_ext"]
+                        all_saved_paths, all_failed = download_historical_date_range_files(
+                            selected_feed["url_template"], date_list, base_feed_name, needs_decompression, output_ext, token
+                        )
+
+                    if all_saved_paths:
+                        print(f"\nDownloaded {len(all_saved_paths)} file(s) (kept separate and gzipped):")
+                        for path in all_saved_paths:
+                            print(f"  - {path}")
+                    else:
+                        print("Download failed. Exiting.", file=sys.stderr)
+                        sys.exit(1)
+
+                    if all_failed:
+                        print(f"\nWarning: {len(all_failed)} item(s) failed and were skipped: {', '.join(all_failed)}", file=sys.stderr)
+
+                    print("\nScript finished.")
+                    sys.exit(0)
+
+                else:
+                    date_input_valid = False
+                    while not date_input_valid:
+                        historical_date_ymd = input("\nEnter date (YYYYMMDD): ").strip()
+                        if re.fullmatch(r'\d{8}', historical_date_ymd):
+                            try:
+                                datetime.datetime.strptime(historical_date_ymd, "%Y%m%d")
+                                if base_feed_name == "AnonymousResidentialRT":
+                                    multi_range_choice = input("  Download multiple Realtime feeds across a time range (every 5 min)? (Y/N): ").strip().upper()
+
+                                    if multi_range_choice == 'Y':
+                                        range_input_valid = False
+                                        while not range_input_valid:
+                                            start_hhmm = input("  Enter start time (HHMM, e.g., 0000): ").strip()
+                                            end_hhmm = input("  Enter end time (HHMM, e.g., 0300): ").strip()
+                                            if re.fullmatch(r'\d{4}', start_hhmm) and re.fullmatch(r'\d{4}', end_hhmm):
+                                                try:
+                                                    start_dt = datetime.datetime.strptime(start_hhmm, "%H%M")
+                                                    end_dt = datetime.datetime.strptime(end_hhmm, "%H%M")
+                                                    if start_dt.minute % 5 != 0 or end_dt.minute % 5 != 0:
+                                                        print("  Times must fall on 5-minute intervals (00, 05, 10, ... 55) since this feed is published every 5 minutes.")
+                                                    elif start_dt > end_dt:
+                                                        print("  Start time must be before or equal to end time.")
+                                                    else:
+                                                        realtime_range_start = start_hhmm
+                                                        realtime_range_end = end_hhmm
+                                                        multi_download_realtime_range = True
+                                                        current_time_hms = f"{start_hhmm}-{end_hhmm}"
+                                                        range_input_valid = True
+                                                        date_input_valid = True
+                                                except ValueError:
+                                                    print("  Invalid time value.")
+                                            else:
+                                                print("  Invalid format. Use HHMM (e.g., 0000, 1345).")
+                                    else:
+                                        historical_time_hhmm = input("Enter time (HHMM): ").strip()
+                                        if re.fullmatch(r'\d{4}', historical_time_hhmm):
+                                            api_url = selected_feed["url_template"].format(historical_date_ymd, historical_time_hhmm)
+                                            current_time_hms = historical_time_hhmm + '00'
+                                            date_input_valid = True
+                                        else:
+                                            print("Invalid time format.")
+                                else:
+                                    api_url = selected_feed["url_template"].format(historical_date_ymd)
+                                    date_input_valid = True
+
+                                if date_input_valid:
+                                    current_date_ymd = historical_date_ymd
+                            except ValueError:
+                                print("Invalid date.")
+                        else:
+                            print("Invalid format.")
             
             download_successful = False
             download_filename_temp = f"{current_date_ymd}"
