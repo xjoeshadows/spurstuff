@@ -16,6 +16,10 @@
   - Will enrich an IP or IPs with multiple dates based on the user timeline specified and return the changes to the data over that timeline for quick temporal analysis.
 
 ## Data Management Tools:
+
+- #### contextAPI_JsonAnalyzer.py
+  - A Spur JSON data file analyzer with HTML/PDF report export. Highlights all of the keys in the data and pulls out certain higher risks. Categorizes the data by type, e.g. IP/infra geolocation and client concentrations.
+
 - #### contextAPI_HistoricEnrichmentDiffer.py:
   - A full differ across multiple enrichment files of IPs with two operating modes:
     - Mode 1 will do a strict A-to-B diff If an IP appears more than once in either file, only its LATEST occurrence is kept (earlier duplicates are dropped). Best for a quick 'what changed since last time' comparison.
