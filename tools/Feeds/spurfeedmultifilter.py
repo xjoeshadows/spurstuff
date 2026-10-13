@@ -954,22 +954,32 @@ if __name__ == "__main__":
     if not decompressed_source_file_path or not os.path.exists(decompressed_source_file_path):
         print(f"Critical Error: File '{decompressed_source_file_path}' not found. Exiting.", file=sys.stderr)
         sys.exit(1)
-    
+
+    if decompressed_source_file_path.lower().endswith('.gz'):
+        while True:
+            uncompress_choice = input(f"\nWould you like to uncompress the {os.path.basename(decompressed_source_file_path)} feed? (Y/N): ").strip().upper()
+            if uncompress_choice in ('Y', 'N'):
+                break
+            print("Invalid response. Please enter Y or N.", file=sys.stderr)
+
+        if uncompress_choice == 'N':
+            print(f"File available at: {decompressed_source_file_path}")
+            print("\nScript finished.")
+            sys.exit(0)
+
+        decompressed_path = decompress_file(decompressed_source_file_path)
+        if not decompressed_path:
+            print("Decompression failed. Exiting.", file=sys.stderr)
+            sys.exit(1)
+        decompressed_source_file_path = decompressed_path
+
     filter_criteria = []
-    
+
     raw_filter_choice = input("\nDo you want to filter the data? (Y/N) [Default: Y]: ").strip().upper()
     perform_initial_filter_choice = 'N' if raw_filter_choice == 'N' else 'Y'
 
     if perform_initial_filter_choice == 'Y':
         while True:
-            # Decompress the file if it's gzipped, now that we've confirmed filtering
-            if decompressed_source_file_path.lower().endswith('.gz'):
-                decompressed_path = decompress_file(decompressed_source_file_path)
-                if not decompressed_path:
-                    print("Decompression failed. Exiting.", file=sys.stderr)
-                    sys.exit(1)
-                decompressed_source_file_path = decompressed_path
-
             # Allow MMDB files to be filtered in addition to JSON
             if not decompressed_source_file_path.lower().endswith(('.json', '.mmdb')):
                 print(f"Error: The file '{os.path.basename(decompressed_source_file_path)}' is not a supported format for filtering (.json or .mmdb).", file=sys.stderr)
