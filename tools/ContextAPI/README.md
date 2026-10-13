@@ -25,8 +25,6 @@
       an IP's data evolved across multiple past dates before being compared against the current file. Best for forensic/investigative work: spotting attributes that appeared and disappeared over time, multi-stage changes, or brand-new context that never showed up historically.
 
 ## Data Management Tools:
-- #### contextAPI_JsonAnalyzer.py:
-  - Designed to break down a JSON of Spur's data, either from an enrichment or a feed to provide a deep statistical analysis of the keys witin it.
 - #### contextAPI_HistoricEnrichmentDiffer.py:
   - Designed to help analyze the differences between two JSON files, either at a high level statistical analysis of the differences between the files or a file export of the deep IP by IP level breakdown of key/value changes/adds/deletions.    
 
