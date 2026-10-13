@@ -15,15 +15,12 @@
 - #### contextAPI_timelineanalysis.py:
   - Will enrich an IP or IPs with multiple dates based on the user timeline specified and return the changes to the data over that timeline for quick temporal analysis.
 
+## Data Management Tools:
 - #### contextAPI_HistoricEnrichmentDiffer.py:
   - A full differ across multiple enrichment files of IPs with two operating modes:
     - Mode 1 will do a strict A-to-B diff If an IP appears more than once in either file, only its LATEST occurrence is kept (earlier duplicates are dropped). Best for a quick 'what changed since last time' comparison.
     - Mode 2 keeps EVERY historical record for an IP (indexed by Timestamp) instead of collapsing to just the latest, so you can see how
       an IP's data evolved across multiple past dates before being compared against the current file. Best for forensic/investigative work: spotting attributes that appeared and disappeared over time, multi-stage changes, or brand-new context that never showed up historically.
-
-## Data Management Tools:
-- #### contextAPI_HistoricEnrichmentDiffer.py:
-  - Designed to help analyze the differences between two JSON files, either at a high level statistical analysis of the differences between the files or a file export of the deep IP by IP level breakdown of key/value changes/adds/deletions.    
 
 - #### IPs+Timestamps.csv:
   - Sample CSV file
