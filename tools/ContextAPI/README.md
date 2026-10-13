@@ -1,4 +1,4 @@
-## A collection of tools to interact with Spur's Feeds. Substitute your own token variable for the placeholder in the scripts. 
+## A collection of tools to interact with Spur's Context API. Substitute your own token variable for the placeholder in the scripts. 
 ### *All scripts expect a Spur token to be set as $TOKEN, otherwise will prompt the user to paste it in.
 
 ## Enrichment Tools:
