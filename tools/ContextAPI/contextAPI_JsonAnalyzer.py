@@ -312,14 +312,24 @@ def summarize_file_keys(path: str) -> (List[str], int):
     return filter_container_only_keys(counters), total
 
 
+class KeyCounter(Counter):
+    """Value counts for one key, plus how many input records had at least one value for it."""
+    present = 0
+
+
 def summarize_file_full(path: str) -> (Dict[str, Counter], int):
-    counters: Dict[str, Counter] = defaultdict(Counter)
+    counters: Dict[str, KeyCounter] = defaultdict(KeyCounter)
     total = 0
     for i, obj in enumerate(iter_json_objects(path), 1):
         total = i
         if i % PROGRESS_EVERY == 0:
             print(f"Processed {i} objects...", file=sys.stderr)
-        walk(obj, counters, "")
+        record: Dict[str, Counter] = defaultdict(Counter)
+        walk(obj, record, "")
+        for path_key, c in record.items():
+            if c:
+                counters[path_key].update(c)
+                counters[path_key].present += 1
     return counters, total
 
 
@@ -538,8 +548,15 @@ def build_groups(selected_keys: List[str]) -> List[Dict[str, Any]]:
 PIE_TOP_N = 3  # capped for colorblind-safe all-pairs distinguishability; see palette validation notes
 
 
-def build_pie_slices(items: List[Tuple[Tuple[str, Any], int]], key_total: int, truncate: int) -> List[Dict[str, Any]]:
-    """Top 3 real values (validated categorical colors) + a single 'Others' slice for the rest."""
+def build_pie_slices(
+    items: List[Tuple[Tuple[str, Any], int]], key_total: int, truncate: int, total_objects: int
+) -> List[Dict[str, Any]]:
+    """
+    Top 3 real values (validated categorical colors) + a single 'Others' slice for the rest.
+    "pct" (shown in the legend) is out of all input records, matching the bars; "ring_pct"
+    (the drawn slice size) is the value's share of this key's counted values, so the ring
+    always totals 100% even when the key is missing from some records or holds lists.
+    """
     top = items[:PIE_TOP_N]
     slices = []
     for i, (sig, cnt) in enumerate(top):
@@ -547,7 +564,8 @@ def build_pie_slices(items: List[Tuple[Tuple[str, Any], int]], key_total: int, t
             "css_class": f"c{i + 1}",
             "label": html_escape(display_value(sig, truncate)),
             "count": cnt,
-            "pct": (cnt / key_total * 100) if key_total else 0.0,
+            "pct": (cnt / total_objects * 100) if total_objects else 0.0,
+            "ring_pct": (cnt / key_total * 100) if key_total else 0.0,
         })
     if len(items) > PIE_TOP_N:
         rest = items[PIE_TOP_N:]
@@ -556,7 +574,8 @@ def build_pie_slices(items: List[Tuple[Tuple[str, Any], int]], key_total: int, t
             "css_class": "other",
             "label": f"Others (+{len(rest):,})",
             "count": rest_count,
-            "pct": (rest_count / key_total * 100) if key_total else 0.0,
+            "pct": (rest_count / total_objects * 100) if total_objects else 0.0,
+            "ring_pct": (rest_count / key_total * 100) if key_total else 0.0,
         })
     return slices
 
@@ -568,7 +587,42 @@ DONUT_CENTER = DONUT_SIZE / 2
 DONUT_CIRCUMFERENCE = 2 * math.pi * DONUT_RADIUS
 
 
-def render_donut_and_legend(slices: List[Dict[str, Any]]) -> str:
+def render_tip(title: str, paragraphs: List[str], equation: str = "") -> str:
+    """
+    A small ⓘ button with a hover/focus/click explainer. Text is trusted static markup
+    (it may contain <b>/<code>), so callers must pre-escape any dynamic values.
+    """
+    body = f'<b class="t">{title}</b>' + "".join(f"<p>{p}</p>" for p in paragraphs)
+    if equation:
+        body += f'<span class="eq">{equation}</span>'
+    return (
+        f'<span class="tip"><button type="button" class="tip-btn" '
+        f'aria-label="What does {title.lower()} mean?" aria-expanded="false">i</button>'
+        f'<span class="tip-body" role="tooltip">{body}</span></span>'
+    )
+
+
+def obs_tip(total_objects: int, boolean: bool = False) -> str:
+    n = f"{total_objects:,}"
+    if boolean:
+        return render_tip("Observations", [
+            f"The number of IP records where this key is present, out of the <b>{n}</b> IPs in this report. "
+            f"The % beside true and false is out of all {n} IPs."
+        ])
+    return render_tip("Observations", [
+        f"The number of IP records where this key is present with at least one value, out of the <b>{n}</b> "
+        f"IPs in this report. An IP with a list of values still counts once."
+    ], f"Bar % = value count ÷ all {n} IPs")
+
+
+def legend_tip(total_objects: int) -> str:
+    return render_tip("Legend %", [
+        f"Same basis as the bars: value count ÷ all <b>{total_objects:,}</b> IPs. "
+        f"The ring shows how this key's values split between them."
+    ])
+
+
+def render_donut_and_legend(slices: List[Dict[str, Any]], tip_html: str = "") -> str:
     # Built as plain SVG stroked circles (stroke-dasharray per slice), not CSS conic-gradient.
     # A conic-gradient forces Chromium's print/PDF export to emit a PDF shading pattern, which
     # Apple's Preview/Quartz renderer doesn't reliably support — it falls back to a flat gray
@@ -579,7 +633,7 @@ def render_donut_and_legend(slices: List[Dict[str, Any]]) -> str:
     circles = []
     cum = 0.0
     for s in slices:
-        length = (s["pct"] / 100) * DONUT_CIRCUMFERENCE
+        length = (s["ring_pct"] / 100) * DONUT_CIRCUMFERENCE
         offset = -(cum / 100) * DONUT_CIRCUMFERENCE
         gap = max(DONUT_CIRCUMFERENCE - length, 0)
         circles.append(
@@ -587,7 +641,7 @@ def render_donut_and_legend(slices: List[Dict[str, Any]]) -> str:
             f'fill="none" stroke-width="{DONUT_STROKE_WIDTH}" '
             f'stroke-dasharray="{length:.3f} {gap:.3f}" stroke-dashoffset="{offset:.3f}"></circle>'
         )
-        cum += s["pct"]
+        cum += s["ring_pct"]
     donut_svg = (
         f'<svg class="donut" viewBox="0 0 {DONUT_SIZE} {DONUT_SIZE}" width="{DONUT_SIZE}" height="{DONUT_SIZE}">'
         f'<g transform="rotate(-90 {DONUT_CENTER} {DONUT_CENTER})">{"".join(circles)}</g>'
@@ -600,9 +654,11 @@ def render_donut_and_legend(slices: List[Dict[str, Any]]) -> str:
         f'<span class="val"><b>{s["pct"]:.2f}%</b> · {s["count"]:,}</span></div>'
         for s in slices
     )
+    cap_html = f'<div class="legend-cap"><span>% of IPs</span>{tip_html}</div>' if tip_html else ""
     return f"""
           <div class="pie-col">
             {donut_svg}
+            {cap_html}
             <div class="legend">
               {legend_rows}
             </div>
@@ -613,7 +669,10 @@ def render_key_card(
     key: str, counter: Counter, total_objects: int, truncate: int, top_n: int, max_unique: int,
     critical: bool, full_width: bool
 ) -> str:
-    total_obs = sum(counter.values())
+    value_total = sum(counter.values())
+    # "obs" in the card header = IP records that have this key with at least one value (not the
+    # sum of value counts, which exceeds the record count for list-valued keys).
+    total_obs = getattr(counter, "present", 0) or value_total
     key_esc = html_escape(key)
     anchor_id = slugify_key(key)
     badge = '<span class="badge">critical path</span>' if critical else ""
@@ -663,7 +722,7 @@ def render_key_card(
             leftover_count = unique_count - min(unique_count, display_cap)
 
             remaining_count = unique_count - len(shown)
-            remaining_sum = total_obs - sum(cnt for _, cnt in shown)
+            remaining_sum = value_total - sum(cnt for _, cnt in shown)
             remaining_pct = (remaining_sum / total_objects * 100) if total_objects else 0.0
 
             rest_rows = []
@@ -684,7 +743,7 @@ def render_key_card(
             bar_rows.append(
                 "<details class=\"tail\">\n"
                 f'              <summary>+ <strong>{remaining_count:,} more</strong> values · '
-                f'{remaining_sum:,} obs ({remaining_pct:.1f}% combined)</summary>\n'
+                f'{remaining_sum:,} counts ({remaining_pct:.1f}% of IPs combined)</summary>\n'
                 '              <div class="tail-body">\n                '
                 + "\n                ".join(rest_rows) +
                 "\n              </div>\n            </details>"
@@ -693,8 +752,8 @@ def render_key_card(
         bars_html = "\n            " + "\n            ".join(bar_rows)
 
         if unique_count >= 2:
-            slices = build_pie_slices(items, total_obs, truncate)
-            pie_html = render_donut_and_legend(slices)
+            slices = build_pie_slices(items, value_total, truncate, total_objects)
+            pie_html = render_donut_and_legend(slices, legend_tip(total_objects))
             body = f"""
         <div class="card-body">
           <div class="bars-col">{bars_html}
@@ -707,7 +766,7 @@ def render_key_card(
       <div class="card" id="{anchor_id}" data-key="{key_esc}" data-total="{total_obs}"{style_attr}>
         <div class="card-head">
           <span class="key">{key_esc}{badge}</span>
-          <span class="total tnum">{total_obs:,} obs</span>
+          <span class="total tnum">{total_obs:,} obs{obs_tip(total_objects, is_boolean_counter(counter))}</span>
         </div>{body}
       </div>"""
 
@@ -799,7 +858,7 @@ def total_observations_across_keys(counters: Dict[str, Counter], source_keys: Li
 
 def render_flagged_card(
     card_id: str, title: str, badge_text: str, merged: Counter, denominator: int,
-    empty_note: str, full_width: bool
+    empty_note: str, full_width: bool, tip_html: str = ""
 ) -> str:
     """A red risk card for a curated cross-key match list (no pie — it's a filtered subset, not a full key breakdown)."""
     total_obs = sum(merged.values())
@@ -826,7 +885,7 @@ def render_flagged_card(
       <div class="card" id="{card_id}" data-key="{html_escape(title)}" data-total="{total_obs}"{style_attr}>
         <div class="card-head">
           <span class="key">{html_escape(title)}{badge}</span>
-          <span class="total tnum">{total_obs:,} obs</span>
+          <span class="total tnum">{total_obs:,} obs{tip_html}</span>
         </div>{body}
       </div>"""
 
@@ -859,14 +918,22 @@ def render_risk_section(
         merged = gather_cross_key_matches(counters, MALWARE_PROXY_SOURCE_KEYS, truncate, MALWARE_PROXY_VALUES)
         cards.append(render_flagged_card(
             "card-malware-proxies", "Malware Proxies", "malware proxy", merged, total_objects,
-            "No known malware proxy operators detected in client.proxies or tunnels.operator.", full_width
+            "No known malware proxy operators detected in client.proxies or tunnels.operator.", full_width,
+            render_tip("Observations", [
+                "Matches only: known malware proxy operators found in <code>client.proxies</code> and "
+                "<code>tunnels.operator</code>, summed across both keys."
+            ], f"% = match count ÷ all {total_objects:,} IPs")
         ))
     if sanctioned_present:
         merged = gather_cross_key_matches(counters, SANCTIONED_COUNTRY_SOURCE_KEYS, truncate, SANCTIONED_COUNTRIES)
         denom = total_observations_across_keys(counters, SANCTIONED_COUNTRY_SOURCE_KEYS)
         cards.append(render_flagged_card(
             "card-sanctioned-countries", "Sanctioned Countries", "sanctioned", merged, denom,
-            "No OFAC-sanctioned countries detected in location.country or client.concentration.country.", full_width
+            "No OFAC-sanctioned countries detected in location.country or client.concentration.country.", full_width,
+            render_tip("Observations", [
+                "Matches only: OFAC-sanctioned countries (CU, IR, KP, SY, RU, BY) found in "
+                "<code>location.country</code> and <code>client.concentration.country</code>."
+            ], f"% = match count ÷ all observations across both keys ({denom:,})")
         ))
 
     return f"""
@@ -881,9 +948,14 @@ def render_risk_section(
   </section>"""
 
 
-def render_headline_stats(counters: Dict[str, Counter], selected_keys: List[str]) -> str:
+def render_headline_stats(counters: Dict[str, Counter], selected_keys: List[str], total_objects: int) -> str:
     selected_set = set(selected_keys)
-    tiles = []
+    tiles = [f"""
+      <div class="stat total">
+        <div class="n tnum">{total_objects:,}</div>
+        <div class="l">Total IPs</div>
+        <div class="k">records in this enrichment</div>
+      </div>"""]
     for key, label in HEADLINE_STATS:
         if key in selected_set and key in counters:
             unique_count = len(counters[key])
@@ -893,10 +965,8 @@ def render_headline_stats(counters: Dict[str, Counter], selected_keys: List[str]
         <div class="l">{html_escape(label)}</div>
         <div class="k">{html_escape(key)}</div>
       </a>""")
-    if not tiles:
-        return ""
     return f"""
-    <div class="stats">{"".join(tiles)}
+    <div class="stats" style="--cols:{len(tiles)}">{"".join(tiles)}
     </div>"""
 
 
@@ -1001,11 +1071,12 @@ html { scroll-behavior: smooth; }
 
 .stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr));
   gap: 12px;
 }
 @media (max-width: 720px) {
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat.total { grid-column: 1 / -1; }
 }
 .stat {
   display: block;
@@ -1017,6 +1088,8 @@ html { scroll-behavior: smooth; }
   transition: border-color 0.15s ease;
 }
 .stat:hover { border-color: var(--accent); }
+.stat.total:hover { border-color: var(--border); }
+.stat.total .n { color: var(--accent); }
 .stat .n {
   font-family: "Fragment Mono", ui-monospace, monospace;
   font-size: 24px;
@@ -1388,6 +1461,66 @@ footer.note {
   line-height: 1.6;
 }
 
+/* Explainer tooltips (ⓘ next to "obs" and the donut legend) */
+.tip { position: relative; display: inline-flex; vertical-align: middle; margin-left: 7px; }
+.tip-btn {
+  appearance: none; background: none; cursor: help; padding: 0;
+  width: 15px; height: 15px; border-radius: 50%;
+  border: 1px solid var(--ink-3); color: var(--ink-3);
+  font: italic 600 10px/1 "Fragment Mono", ui-monospace, monospace;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: color .12s ease, border-color .12s ease, background .12s ease;
+}
+.tip:hover .tip-btn, .tip.open .tip-btn, .tip-btn:focus-visible {
+  color: var(--accent-ink); background: var(--accent); border-color: var(--accent); outline: none;
+}
+.group.risk .tip:hover .tip-btn, .group.risk .tip.open .tip-btn, .group.risk .tip-btn:focus-visible {
+  background: var(--critical); border-color: var(--critical); color: var(--bg);
+}
+.tip-body {
+  position: absolute; z-index: 20; top: calc(100% + 9px); right: -6px;
+  width: 292px; padding: 12px 14px 13px;
+  background: var(--surface-2); border: 1px solid var(--accent); border-radius: 3px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.55);
+  font: 400 12px/1.55 "Inter", system-ui, sans-serif; color: var(--ink-2);
+  text-align: left; white-space: normal; letter-spacing: 0;
+  opacity: 0; visibility: hidden; transform: translateY(-3px);
+  transition: opacity .12s ease, transform .12s ease, visibility .12s;
+  pointer-events: none;
+}
+.group.risk .tip-body { border-color: var(--critical); }
+.tip-body::before {
+  content: ""; position: absolute; top: -5px; right: 10px; width: 8px; height: 8px;
+  background: var(--surface-2); border-left: 1px solid var(--accent); border-top: 1px solid var(--accent);
+  transform: rotate(45deg);
+}
+.group.risk .tip-body::before { border-color: var(--critical); }
+.tip:hover .tip-body, .tip.open .tip-body, .tip:focus-within .tip-body {
+  opacity: 1; visibility: visible; transform: none; pointer-events: auto;
+}
+.tip-body b.t {
+  display: block; margin-bottom: 5px;
+  font: 500 10.5px/1 "Fragment Mono", ui-monospace, monospace;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--ink);
+}
+.tip-body p { margin: 0 0 6px; }
+.tip-body p:last-child { margin-bottom: 0; }
+.tip-body code {
+  font: 400 11px "Fragment Mono", ui-monospace, monospace; color: var(--ink);
+  background: rgba(255,255,255,.07); padding: 0 4px; border-radius: 2px;
+}
+.tip-body .eq { display: block; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); color: var(--ink-3); }
+.legend-cap {
+  display: flex; align-items: center; justify-content: center;
+  font: 500 10.5px/1 "Fragment Mono", ui-monospace, monospace;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3);
+  margin: -2px 0 -4px;
+}
+.legend-cap .tip { margin-left: 6px; }
+.legend-cap .tip-body { width: 250px; }
+@media (max-width: 520px) { .tip-body { width: min(292px, 78vw); } }
+@media print { .tip, .legend-cap { display: none !important; } }
+
 /*
   Print / "Save as PDF" support. Two things break a page like this by default:
   (1) browsers skip CSS backgrounds when printing unless told otherwise, which erases
@@ -1601,6 +1734,25 @@ HTML_SCRIPT = """<script>
   sort.addEventListener('change', applySort);
   applySort();
 
+  // Explainer tooltips open on hover/focus via CSS; click/tap pins one open, Esc or an outside click closes it.
+  document.addEventListener('click', e => {
+    const btn = e.target.closest('.tip-btn');
+    document.querySelectorAll('.tip.open').forEach(t => {
+      if (!btn || t !== btn.parentElement) { t.classList.remove('open'); t.firstElementChild.setAttribute('aria-expanded', 'false'); }
+    });
+    if (btn) { const open = btn.parentElement.classList.toggle('open'); btn.setAttribute('aria-expanded', open); }
+  });
+  document.addEventListener('mouseover', e => {
+    const hovered = e.target.closest('.tip');
+    if (!hovered) return;
+    document.querySelectorAll('.tip.open').forEach(t => {
+      if (t !== hovered) { t.classList.remove('open'); t.firstElementChild.setAttribute('aria-expanded', 'false'); }
+    });
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') document.querySelectorAll('.tip.open').forEach(t => t.classList.remove('open'));
+  });
+
   // Tails intentionally stay collapsed for print/PDF (showing only their "+N more"
   // summary line) so a high-cardinality card doesn't balloon to full-page height in the
   // dense multi-card-per-page print layout. Full itemization remains available on-screen
@@ -1618,7 +1770,7 @@ def summary_to_html(
     groups_html = "\n".join(
         render_group(g, counters, total_objects, truncate, top_n, max_unique) for g in groups
     )
-    stats_html = render_headline_stats(counters, keys)
+    stats_html = render_headline_stats(counters, keys, total_objects)
     basename_esc = html_escape(os.path.basename(input_path))
     n_keys = len(keys)
 
