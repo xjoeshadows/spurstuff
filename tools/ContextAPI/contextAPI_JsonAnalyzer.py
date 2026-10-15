@@ -1,49 +1,4 @@
 #!/usr/bin/env python3
-"""
-Analyze a .json or .jsonl file, list every unique key (dot-path style),
-and for each key produce the unique values seen and their occurrence counts.
-
-This is a variant of contextAPI_JsonAnalyzer.py that adds a fourth export
-format: a self-contained "Spur Intelligence IP Context Classification" HTML report
-(--html-output). Keys
-are grouped into the categories used by the Context API response schema
-(geography, device & network, anonymization/proxy signals, risk
-classification); anything outside that known schema falls into an "Other
-Keys" group so the report still degrades gracefully on unfamiliar input.
-The plain-text/JSON/Markdown behavior is unchanged from the original script.
-
-Features:
-- Auto-detect .json vs .jsonl (falls back to JSONL if single-load fails).
-- CLI options: --max-values, --truncate, --json-output, --md-output, --html-output.
-- Interactive key selection: after scanning keys, show list and let user pick which keys to analyze.
-  - Enter comma-separated key indices or ranges (e.g. 1,3-5,8).
-  - Enter "all" to select every key.
-- Non-interactive mode (--non-interactive) to analyze all keys automatically.
-
-Behavior notes:
-- Arrays are always aggregated under their parent key (no numeric index keys).
-- Keys that only ever hold container values (only dict/list JSON signatures and no primitive
-  values like strings/numbers/bools/nulls) are omitted from the reported key list and summaries
-  (their nested subkeys are still recorded and shown).
-- "Count" is the number of times a specific value was observed at that key.
-- "Percent" = (Count for this value) / (Total number of input objects (IPs analyzed)) * 100.
-  Percentages are relative to the total number of input objects processed, not the key's value observations.
-- In the HTML report specifically, bar *length* is scaled relative to each key's own top value
-  (so a key that's individually rare doesn't render as a wall of invisible slivers); the "Percent"
-  number printed next to each bar remains the true value above.
-- The HTML report's Risk Classification section is pinned near the top (under the headline
-  stat tiles, before the other key groups) and combines the raw "risks" key with two curated
-  cross-key detectors, both defined as editable constants near the top of this file:
-    - Malware Proxies: sums occurrences of a fixed list of known malware proxy operator names
-      (MALWARE_PROXY_VALUES) wherever they appear in client.proxies or tunnels.operator. Percent
-      is of total objects analyzed, same basis as every other bar in the report.
-    - Sanctioned Countries: sums occurrences of OFAC-sanctioned country codes (SANCTIONED_COUNTRIES)
-      wherever they appear in location.country or client.concentration.country. Percent is each
-      country's share of the combined total value observations across both keys (not total objects,
-      and not unique-country cardinality — that denominator can exceed the numerator and produce
-      percentages over 100%, so it's deliberately avoided).
-"""
-
 import sys
 import json
 import os
