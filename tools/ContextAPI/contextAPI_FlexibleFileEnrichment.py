@@ -137,7 +137,104 @@ def pre_scan_max_days(file_path, is_csv, start_col, end_col):
                     
     return max_delta
 
-def process_chunk(df_chunk, ip_col, start_col, end_col, perform_historic_lookup, max_days_cap, skipped_file_path, missing_timestamp_behavior=None, run_date_str=None):
+def count_input_rows(file_path, is_csv):
+    """Counts data rows without loading every column into memory."""
+    if is_csv:
+        return sum(len(chunk) for chunk in pd.read_csv(file_path, chunksize=CHUNK_SIZE, usecols=[0]))
+    return len(pd.read_excel(file_path))
+
+def scan_file_date_range(file_path, is_csv, start_col, end_col):
+    """Reads the entire file and returns (earliest, latest, total_rows). Dates are None if none parse."""
+    earliest = latest = None
+    total_rows = 0
+
+    if is_csv:
+        reader = pd.read_csv(file_path, chunksize=CHUNK_SIZE)
+    else:
+        reader = [pd.read_excel(file_path)]
+
+    for chunk in reader:
+        chunk.columns = chunk.columns.str.lower().str.strip()
+        total_rows += len(chunk)
+        for col in {start_col, end_col}:
+            for val in chunk[col]:
+                dt = parse_to_datetime(val)
+                if dt is None:
+                    continue
+                if dt.tzinfo is not None:
+                    dt = dt.replace(tzinfo=None)
+                if earliest is None or dt < earliest:
+                    earliest = dt
+                if latest is None or dt > latest:
+                    latest = dt
+
+    return earliest, latest, total_rows
+
+def propose_span(file_scan):
+    """Turns a scan result into a (start, end) pair of midnight datetimes to suggest, or None. Never proposes the future."""
+    if not file_scan or file_scan[0] is None:
+        return None
+    midnight = datetime.min.time()
+    earliest = datetime.combine(file_scan[0].date(), midnight)
+    latest = min(datetime.combine(file_scan[1].date(), midnight), datetime.combine(datetime.now().date(), midnight))
+    return (earliest, latest) if earliest <= latest else None
+
+def prompt_yyyymmdd(prompt, allow_blank=False):
+    """Asks for a date as YYYYMMDD. Returns a datetime at midnight, or None for a blank answer when allowed."""
+    while True:
+        raw = input(prompt).strip()
+        if not raw and allow_blank:
+            return None
+        if len(raw) == 8 and raw.isdigit():
+            try:
+                dt = datetime.strptime(raw, '%Y%m%d')
+            except ValueError:
+                dt = None
+            if dt is not None:
+                if dt.date() > datetime.now().date():
+                    print("That date is in the future. Please enter today or an earlier date.")
+                    continue
+                return dt
+        print("Please enter a valid date as YYYYMMDD (e.g., 20260101).")
+
+def prompt_static_dates(span):
+    """Asks for a single date or a date range. Offers the input file's own date span when there is one."""
+    if span:
+        print(f"\nTimestamps in your input file span {span[0]:%Y%m%d} to {span[1]:%Y%m%d}.")
+        print("  [1] Use that range")
+        print("  [2] Enter a different date or range")
+        while True:
+            span_choice = input("Select an option (1 or 2): ").strip()
+            if span_choice in ['1', '2']: break
+            print("Invalid choice.")
+        if span_choice == '1':
+            return span
+
+    start_dt = prompt_yyyymmdd("Enter the date (or the start of the range) as YYYYMMDD: ")
+    end_dt = prompt_yyyymmdd("Enter the end date as YYYYMMDD (or press Enter for a single date): ", allow_blank=True)
+    if end_dt is None:
+        end_dt = start_dt
+    if start_dt > end_dt:
+        start_dt, end_dt = end_dt, start_dt
+    return start_dt, end_dt
+
+def format_original_timestamp(s_val, e_val):
+    """The input file's own date value(s), kept for reference. Timestamp holds the date actually queried."""
+    def clean(val):
+        if val is None or pd.isna(val):
+            return None
+        return str(val).strip() or None
+
+    s_str, e_str = clean(s_val), clean(e_val)
+    if not s_str and not e_str:
+        return None
+    if not e_str or s_str == e_str:
+        return s_str
+    if not s_str:
+        return e_str
+    return f"{s_str} - {e_str}"
+
+def process_chunk(df_chunk, ip_col, start_col, end_col, perform_historic_lookup, max_days_cap, skipped_file_path, missing_timestamp_behavior=None, run_date_str=None, static_dates=None):
     """Expands rows into daily increments and logs overflow to the skipped file."""
     all_rows_data = []
     
@@ -151,6 +248,19 @@ def process_chunk(df_chunk, ip_col, start_col, end_col, perform_historic_lookup,
             if isinstance(value, pd.Timestamp):
                 row_dict[key] = str(value)
 
+        if static_dates:
+            # Same static date(s) for every IP; the file's own timestamps (if any) are kept for reference only.
+            s_val = row_dict.pop(start_col, None) if start_col else None
+            e_val = row_dict.pop(end_col, None) if end_col and end_col != start_col else s_val
+            original = format_original_timestamp(s_val, e_val)
+            if original:
+                row_dict['Original_Timestamp'] = original
+            for date_str in static_dates:
+                new_row = row_dict.copy()
+                new_row['Timestamp'] = date_str
+                all_rows_data.append(new_row)
+            continue
+
         if not perform_historic_lookup or not start_col:
             row_dict.pop(start_col, None)
             row_dict.pop(end_col, None)
@@ -159,6 +269,9 @@ def process_chunk(df_chunk, ip_col, start_col, end_col, perform_historic_lookup,
 
         s_val = row_dict.pop(start_col, None)
         e_val = row_dict.pop(end_col, None) if end_col != start_col else s_val
+        original = format_original_timestamp(s_val, e_val)
+        if original:
+            row_dict['Original_Timestamp'] = original
         
         s_dt = parse_to_datetime(s_val)
         e_dt = parse_to_datetime(e_val)
@@ -214,13 +327,91 @@ def process_chunk(df_chunk, ip_col, start_col, end_col, perform_historic_lookup,
             curr_dt = s_dt + timedelta(days=i)
             new_row = row_dict.copy()
             new_row['Timestamp'] = curr_dt.strftime('%Y%m%d')
+            if total_days == 1:
+                new_row['_AllowBuffer'] = True
             all_rows_data.append(new_row)
 
     return all_rows_data
 
-def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo):
+def buffer_candidates(timestamp, buffer_days):
+    """Yields dates (YYYYMMDD) around `timestamp`: nearest first, earlier before later, never in the future."""
+    try:
+        base = datetime.strptime(str(timestamp), '%Y%m%d')
+    except ValueError:
+        return
+    today = datetime.now().date()
+    for offset in range(1, buffer_days + 1):
+        for candidate in (base - timedelta(days=offset), base + timedelta(days=offset)):
+            if candidate.date() <= today:
+                yield candidate.strftime('%Y%m%d')
+
+def query_api(ip_address, timestamp, api_token, use_maxmind_geo):
+    """One Context API lookup, with retries. Returns (status, payload):
+    ('ok', json) on success, ('nodata', reason) on a 404, ('error', reason) otherwise."""
+    url = f"{api_url_base}{ip_address}"
+    query_params = []
+
+    if timestamp:
+        query_params.append(f"dt={timestamp}")
+    if use_maxmind_geo:
+        query_params.append("mmgeo=1")
+
+    if query_params:
+        url += "?" + "&".join(query_params)
+
+    headers = {'TOKEN': api_token}
+
+    for attempt in range(MAX_RETRIES + 1):
+        if SHUTDOWN_EVENT.is_set():
+            return ('error', "Canceled during retry (Graceful Shutdown)")
+
+        try:
+            response = HTTP.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+
+            if response.status_code == 404:
+                return ('nodata', "404 Not Found (No Data)")
+
+            response.raise_for_status()
+            json_response = response.json()
+
+            if attempt > 0:
+                print(f"  [+] IP {ip_address} successfully enriched after {attempt} retry(s).")
+
+            return ('ok', json_response)
+
+        except requests.exceptions.RequestException as e:
+            is_retryable = True
+            error_desc = str(e)
+
+            if isinstance(e, requests.exceptions.ConnectionError):
+                error_desc = "Connection Error"
+            elif isinstance(e, requests.exceptions.Timeout):
+                error_desc = "Read Timeout"
+            elif hasattr(e, 'response') and e.response is not None:
+                if e.response.status_code not in [429, 500, 502, 503, 504]:
+                    is_retryable = False
+                error_desc = f"HTTP {e.response.status_code}"
+
+            if is_retryable and attempt < MAX_RETRIES:
+                backoff_time = 2 * (2 ** attempt)
+                print(f"  [!] Error on {ip_address} ({error_desc}). Backing off {backoff_time}s...")
+
+                for _ in range(backoff_time):
+                    if SHUTDOWN_EVENT.is_set(): break
+                    time.sleep(1)
+            else:
+                fail_prefix = f"Failed after {MAX_RETRIES} retries" if is_retryable else "Failed (Non-retryable)"
+                if attempt >= MAX_RETRIES:
+                    print(f"  [-] IP {ip_address} permanently failed.")
+                return ('error', f"{fail_prefix}: {error_desc}")
+        except Exception as e:
+            print(f"  [-] IP {ip_address} crashed unexpectedly: {str(e)}")
+            return ('error', f"Unexpected Error: {str(e)}")
+
+def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo, buffer_days=0):
     force_current_lookup = row_data.pop('_ForceCurrentLookup', False)
     no_data_missing_ts = row_data.pop('_NoDataMissingTimestamp', False)
+    allow_buffer = row_data.pop('_AllowBuffer', False)
 
     if SHUTDOWN_EVENT.is_set():
         row_data['Error_Reason'] = "Canceled (Graceful Shutdown)"
@@ -236,72 +427,39 @@ def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo):
 
     timestamp = row_data.get('Timestamp') if (perform_historic_lookup and not force_current_lookup) else None
 
-    url = f"{api_url_base}{ip_address}"
-    query_params = []
-    
-    if timestamp:
-        query_params.append(f"dt={timestamp}")
-    if use_maxmind_geo:
-        query_params.append("mmgeo=1")
+    status, payload = query_api(ip_address, timestamp, api_token, use_maxmind_geo)
 
-    if query_params:
-        url += "?" + "&".join(query_params)
-        
-    headers = {'TOKEN': api_token}
+    # No data for the requested date: try the surrounding dates, stopping at the first hit.
+    if status == 'nodata' and timestamp and allow_buffer and buffer_days > 0:
+        found = False
+        last_error = None
+        for candidate in buffer_candidates(timestamp, buffer_days):
+            c_status, c_payload = query_api(ip_address, candidate, api_token, use_maxmind_geo)
+            if c_status == 'ok':
+                # Timestamp is the date that produced the data; remember what was originally asked for (used by resume).
+                row_data['Requested_Timestamp'] = timestamp
+                row_data['Timestamp'] = candidate
+                status, payload = c_status, c_payload
+                found = True
+                break
+            if c_status == 'error':
+                last_error = f"{c_payload} (on buffer date {candidate})"
+                if SHUTDOWN_EVENT.is_set(): break
 
-    for attempt in range(MAX_RETRIES + 1):
-        if SHUTDOWN_EVENT.is_set():
-            row_data['Error_Reason'] = "Canceled during retry (Graceful Shutdown)"
-            return (False, row_data)
-
-        try:
-            response = HTTP.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-            
-            if response.status_code == 404:
-                row_data['Error_Reason'] = "404 Not Found (No Data)"
-                return (False, row_data)
-                
-            response.raise_for_status()
-            json_response = response.json()
-            
-            if attempt > 0:
-                print(f"  [+] IP {ip_address} successfully enriched after {attempt} retry(s).")
-                
-            merged_data = {**row_data, **json_response}
-            merged_data.pop('IP', None)
-            
-            return (True, merged_data)
-            
-        except requests.exceptions.RequestException as e:
-            is_retryable = True
-            error_desc = str(e)
-
-            if isinstance(e, requests.exceptions.ConnectionError):
-                error_desc = "Connection Error"
-            elif isinstance(e, requests.exceptions.Timeout):
-                error_desc = "Read Timeout"
-            elif hasattr(e, 'response') and e.response is not None:
-                if e.response.status_code not in [429, 500, 502, 503, 504]:
-                    is_retryable = False
-                error_desc = f"HTTP {e.response.status_code}"
-            
-            if is_retryable and attempt < MAX_RETRIES:
-                backoff_time = 2 * (2 ** attempt)
-                print(f"  [!] Error on {ip_address} ({error_desc}). Backing off {backoff_time}s...")
-                
-                for _ in range(backoff_time):
-                    if SHUTDOWN_EVENT.is_set(): break
-                    time.sleep(1)
+        if not found:
+            row_data['Buffer_Days_Tried'] = buffer_days
+            if last_error:
+                status, payload = 'error', last_error
             else:
-                fail_prefix = f"Failed after {MAX_RETRIES} retries" if is_retryable else "Failed (Non-retryable)"
-                row_data['Error_Reason'] = f"{fail_prefix}: {error_desc}"
-                if attempt >= MAX_RETRIES:
-                    print(f"  [-] IP {ip_address} permanently failed.")
-                return (False, row_data)
-        except Exception as e:
-            row_data['Error_Reason'] = f"Unexpected Error: {str(e)}"
-            print(f"  [-] IP {ip_address} crashed unexpectedly: {str(e)}")
-            return (False, row_data)
+                payload = f"404 Not Found (No Data within {buffer_days}-day buffer)"
+
+    if status == 'ok':
+        merged_data = {**row_data, **payload}
+        merged_data.pop('IP', None)
+        return (True, merged_data)
+
+    row_data['Error_Reason'] = payload
+    return (False, row_data)
 
 def write_to_json_stream(results_iterator, output_path, failed_path, stats_ref, start_time):
     last_update_time = time.time()
@@ -314,6 +472,8 @@ def write_to_json_stream(results_iterator, output_path, failed_path, stats_ref, 
                     outfile.write(json.dumps(result_data, ensure_ascii=False) + '\n')
                     outfile.flush()
                     stats_ref['success'] += 1
+                    if 'Requested_Timestamp' in result_data:
+                        stats_ref['buffered'] += 1
                 else:
                     failfile.write(json.dumps(result_data, ensure_ascii=False) + '\n')
                     failfile.flush()
@@ -360,6 +520,7 @@ if __name__ == "__main__":
         print("Invalid choice.")
 
     processed_keys = set()
+    prev_dates = set()
     prev_success_path = prev_fail_path = None
 
     if resume_mode:
@@ -383,9 +544,12 @@ if __name__ == "__main__":
                             try:
                                 record = json.loads(line)
                                 ip = record.get('ip') or record.get('IP')
-                                ts = record.get('Timestamp')
+                                # Buffered hits keep the originally requested date in Requested_Timestamp
+                                ts = record.get('Requested_Timestamp') or record.get('Timestamp')
                                 if ip:
                                     processed_keys.add(get_composite_key(ip, ts))
+                                    if ts and str(ts).isdigit() and len(str(ts)) == 8:
+                                        prev_dates.add(str(ts))
                             except json.JSONDecodeError:
                                 pass
         print(f"✅ Loaded {len(processed_keys):,} previously processed records into RAM.")
@@ -420,44 +584,113 @@ if __name__ == "__main__":
     perform_historic_lookup = False
     max_days_cap = None
     missing_timestamp_behavior = None
+    buffer_days = 0
+    static_dates = None
+    file_scan = None  # (earliest, latest, total_rows) from scan_file_date_range, filled in lazily
+
+    print("-" * 50)
+    if resume_mode:
+        print("⚠️  RESUME NOTICE")
+        print("Already-processed records are matched on IP + queried date. Choose the SAME date option")
+        print("as the original session, otherwise those IPs will be queried again.")
+        if prev_dates:
+            print(f"Dates found in the previous output: {min(prev_dates)} to {max(prev_dates)}")
+        if start_col:
+            print("\n[Scanning] Reading input file timestamps...")
+            file_scan = scan_file_date_range(input_file_path, is_csv_file, start_col, end_col)
+            if file_scan[0] is not None:
+                print(f"Timestamps in the input file span {file_scan[0]:%Y%m%d} to {file_scan[1]:%Y%m%d}.")
+                print("To match an original run, use the file's timestamps or a static date/range (e.g., that span).")
+        print("-" * 50)
 
     if start_col:
-        print("-" * 50)
         col_display = f"'{start_col}' & '{end_col}'" if start_col != end_col else f"'{start_col}'"
-        lookup_input = input(f"Date column(s) detected: {col_display}.\nPerform historical/range lookups? (yes/no): ").strip().lower()
-        perform_historic_lookup = lookup_input in ['yes', 'y']
+        print(f"Date column(s) detected: {col_display}.")
+        print("How should dates be chosen for the lookups?")
+        print("  [1] Use the timestamps from the input file")
+        print("  [2] Set a static date or date range for every IP")
+        print("  [3] No historical lookup (current, real-time data)")
+        date_modes = {'1': 'file', '2': 'static', '3': 'current'}
+    else:
+        print("No date column detected in the input file.")
+        print("  [1] No historical lookup (current, real-time data)")
+        print("  [2] Set a static date or date range for every IP")
+        date_modes = {'1': 'current', '2': 'static'}
 
-        if perform_historic_lookup:
-            print("\n--- Missing Timestamp Handling ---")
-            print("If any rows turn out to be missing a usable date/timestamp value, how should they be handled?")
-            print("  [1] Return no data for those IPs (skip the lookup entirely)")
-            print(f"  [2] Do a current (real-time) lookup instead, and record today's date ({run_date_str}) as their timestamp")
+    while True:
+        date_choice = input(f"Select an option ({', '.join(date_modes)}): ").strip()
+        if date_choice in date_modes: break
+        print("Invalid choice.")
+    date_mode = date_modes[date_choice]
+    print("-" * 50)
 
-            while True:
-                missing_ts_choice = input("Select an option (1 or 2): ").strip()
-                if missing_ts_choice in ['1', '2']:
-                    missing_timestamp_behavior = 'no_data' if missing_ts_choice == '1' else 'current_lookup'
-                    break
-                print("Invalid choice.")
-            print("-" * 50)
+    if date_mode == 'static':
+        perform_historic_lookup = True
+        if start_col and file_scan is None:
+            print("\n[Scanning] Reading input file timestamps to propose a range...")
+            file_scan = scan_file_date_range(input_file_path, is_csv_file, start_col, end_col)
+        total_rows = file_scan[2] if file_scan else count_input_rows(input_file_path, is_csv_file)
+        span = propose_span(file_scan)
 
-        if perform_historic_lookup and start_col != end_col:
+        while True:
+            start_dt, end_dt = prompt_static_dates(span)
+            num_days = (end_dt - start_dt).days + 1
+            print(f"\n{start_dt:%Y%m%d} to {end_dt:%Y%m%d} = {num_days} day(s) per IP.")
+            print(f"Up to {total_rows:,} rows x {num_days} day(s) = ~{total_rows * num_days:,} API requests.")
+            if input("Proceed with these dates? (yes/no): ").strip().lower() in ['yes', 'y']:
+                break
+        static_dates = [(start_dt + timedelta(days=i)).strftime('%Y%m%d') for i in range(num_days)]
+        print("-" * 50)
+
+    elif date_mode == 'file':
+        perform_historic_lookup = True
+
+        print("\n--- Missing Timestamp Handling ---")
+        print("If any rows turn out to be missing a usable date/timestamp value, how should they be handled?")
+        print("  [1] Return no data for those IPs (skip the lookup entirely)")
+        print(f"  [2] Do a current (real-time) lookup instead, and record today's date ({run_date_str}) as their timestamp")
+
+        while True:
+            missing_ts_choice = input("Select an option (1 or 2): ").strip()
+            if missing_ts_choice in ['1', '2']:
+                missing_timestamp_behavior = 'no_data' if missing_ts_choice == '1' else 'current_lookup'
+                break
+            print("Invalid choice.")
+        print("-" * 50)
+
+        print("\n--- No-Data Date Buffer ---")
+        print("If a lookup returns no data for a row's date, nearby dates can be tried before giving up.")
+        print("Example: a buffer of 1 on 20260101 also tries 20251231 and 20260102 (first date with data wins).")
+        if start_col != end_col:
+            print("Only rows with a single date use the buffer (Start/End ranges already cover multiple days).")
+        print("Each buffered attempt is an additional API request.")
+
+        while True:
+            try:
+                buffer_days = int(input("Buffer days to try on each side (0 = no buffer): ").strip())
+                if buffer_days >= 0: break
+                print("Must be 0 or a positive number.")
+            except ValueError:
+                print("Please enter a valid number.")
+        print("-" * 50)
+
+        if start_col != end_col:
             print("\n--- API Volume Protection ---")
             print("Because you have Start and End dates, rows will multiply into daily requests.")
             print("  [1] Set a manual cap (e.g., max 30 days per IP)")
             print("  [2] Scan file first to see the maximum date range (May take minutes)")
             print("  [3] No cap (Process ALL days)")
-            
+
             while True:
                 cap_choice = input("Select an option (1, 2, or 3): ").strip()
                 if cap_choice in ['1', '2', '3']: break
                 print("Invalid choice.")
-                
+
             if cap_choice == '2':
                 found_max = pre_scan_max_days(input_file_path, is_csv_file, start_col, end_col)
                 print(f"✅ Maximum date range found in file: {found_max} days.")
                 cap_choice = '1' # Funnel into manual entry now
-                
+
             if cap_choice == '1':
                 while True:
                     try:
@@ -466,7 +699,7 @@ if __name__ == "__main__":
                         print("Must be a positive number.")
                     except ValueError:
                         print("Please enter a valid number.")
-        print("-" * 50)
+            print("-" * 50)
 
     use_maxmind_geo = False
     geo_input = input("Use MaxMind for geolocation (mmgeo=1)? (yes/no): ").strip().lower()
@@ -499,7 +732,7 @@ if __name__ == "__main__":
 
     signal.signal(signal.SIGINT, sigint_handler)
 
-    stats = {'processed': 0, 'success': 0, 'failed': 0, 'skipped': 0}
+    stats = {'processed': 0, 'success': 0, 'failed': 0, 'skipped': 0, 'buffered': 0}
 
     print("\n" + "-"*50)
     print("💡 TIP: Press Ctrl+Z to PAUSE, type 'fg' to RESUME.")
@@ -510,6 +743,11 @@ if __name__ == "__main__":
         print("💡 TIP: Rows missing a timestamp will return No Data.")
     elif missing_timestamp_behavior == 'current_lookup':
         print(f"💡 TIP: Rows missing a timestamp will get a current lookup, dated {run_date_str}.")
+    if static_dates:
+        range_str = static_dates[0] if len(static_dates) == 1 else f"{static_dates[0]} to {static_dates[-1]}"
+        print(f"💡 TIP: Every IP will be looked up for {range_str} ({len(static_dates)} day(s) each).")
+    if buffer_days:
+        print(f"💡 TIP: Single-date rows with no data will retry within +/-{buffer_days} day(s).")
     print("-" * 50 + "\n")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -517,7 +755,7 @@ if __name__ == "__main__":
             chunk.columns = chunk.columns.str.lower().str.strip()
             
             # Expand rows (or pass them through if no range)
-            chunk_data = process_chunk(chunk, ip_col, start_col, end_col, perform_historic_lookup, max_days_cap, skipped_file_path, missing_timestamp_behavior, run_date_str)
+            chunk_data = process_chunk(chunk, ip_col, start_col, end_col, perform_historic_lookup, max_days_cap, skipped_file_path, missing_timestamp_behavior, run_date_str, static_dates)
             
             valid_to_process = []
             for r in chunk_data:
@@ -534,7 +772,7 @@ if __name__ == "__main__":
                 else:
                     valid_to_process.append(r)
             
-            results = executor.map(lambda r: enrich_ip(r, api_token, perform_historic_lookup, use_maxmind_geo), valid_to_process)
+            results = executor.map(lambda r: enrich_ip(r, api_token, perform_historic_lookup, use_maxmind_geo, buffer_days), valid_to_process)
             write_to_json_stream(results, output_file_path, failed_file_path, stats, start_main_time)
             
             if SHUTDOWN_EVENT.is_set():
@@ -546,6 +784,8 @@ if __name__ == "__main__":
     print(f"Total API Hits Evaluated: {stats['processed']}")
     print(f"Already Processed (Skip): {stats['skipped']}")
     print(f"Successfully Enriched:    {stats['success']}")
+    if buffer_days:
+        print(f"  (via date buffer):      {stats['buffered']}")
     print(f"Failed Lookups:           {stats['failed']}")
     print("-" * 50)
     print(f"Successes saved to: {output_file_path}")
