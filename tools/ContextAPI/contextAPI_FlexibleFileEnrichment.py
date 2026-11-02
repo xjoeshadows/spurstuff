@@ -258,6 +258,8 @@ def process_chunk(df_chunk, ip_col, start_col, end_col, perform_historic_lookup,
             for date_str in static_dates:
                 new_row = row_dict.copy()
                 new_row['Timestamp'] = date_str
+                if len(static_dates) == 1:
+                    new_row['_AllowBuffer'] = True
                 all_rows_data.append(new_row)
             continue
 
@@ -408,7 +410,7 @@ def query_api(ip_address, timestamp, api_token, use_maxmind_geo):
             print(f"  [-] IP {ip_address} crashed unexpectedly: {str(e)}")
             return ('error', f"Unexpected Error: {str(e)}")
 
-def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo, buffer_days=0):
+def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo, buffer_days=0, current_fallback_date=None):
     force_current_lookup = row_data.pop('_ForceCurrentLookup', False)
     no_data_missing_ts = row_data.pop('_NoDataMissingTimestamp', False)
     allow_buffer = row_data.pop('_AllowBuffer', False)
@@ -452,6 +454,18 @@ def enrich_ip(row_data, api_token, perform_historic_lookup, use_maxmind_geo, buf
                 status, payload = 'error', last_error
             else:
                 payload = f"404 Not Found (No Data within {buffer_days}-day buffer)"
+
+    # No data for the requested date: fall back to a current lookup, recorded under today's date.
+    elif status == 'nodata' and timestamp and allow_buffer and current_fallback_date:
+        c_status, c_payload = query_api(ip_address, None, api_token, use_maxmind_geo)
+        if c_status == 'ok':
+            row_data['Requested_Timestamp'] = timestamp
+            row_data['Timestamp'] = current_fallback_date
+            status, payload = c_status, c_payload
+        elif c_status == 'error':
+            status, payload = 'error', f"{c_payload} (on current-lookup fallback)"
+        else:
+            payload = "404 Not Found (No Data, including current-lookup fallback)"
 
     if status == 'ok':
         merged_data = {**row_data, **payload}
@@ -586,6 +600,7 @@ if __name__ == "__main__":
     missing_timestamp_behavior = None
     buffer_days = 0
     static_dates = None
+    current_fallback_date = None
     file_scan = None  # (earliest, latest, total_rows) from scan_file_date_range, filled in lazily
 
     print("-" * 50)
@@ -640,6 +655,31 @@ if __name__ == "__main__":
             if input("Proceed with these dates? (yes/no): ").strip().lower() in ['yes', 'y']:
                 break
         static_dates = [(start_dt + timedelta(days=i)).strftime('%Y%m%d') for i in range(num_days)]
+
+        if num_days == 1:
+            print("\n--- No-Data Handling ---")
+            print(f"If the lookup for {static_dates[0]} returns no data for an IP, what should happen?")
+            print("  [1] Add the IP to the NoEnrichment file")
+            print(f"  [2] Do a current (real-time) lookup instead, and record today's date ({run_date_str}) as the timestamp")
+            print("  [3] Try nearby dates (buffer): e.g., 1 day on 20260101 also tries 20251231 and 20260102")
+
+            while True:
+                no_data_choice = input("Select an option (1, 2, or 3): ").strip()
+                if no_data_choice in ['1', '2', '3']: break
+                print("Invalid choice.")
+
+            if no_data_choice == '2':
+                current_fallback_date = run_date_str
+            elif no_data_choice == '3':
+                print("Each buffered attempt is an additional API request.")
+                while True:
+                    try:
+                        buffer_days = int(input("Buffer days to try on each side (e.g., 1): ").strip())
+                        if buffer_days > 0: break
+                        print("Must be a positive number.")
+                    except ValueError:
+                        print("Please enter a valid number.")
+
         print("-" * 50)
 
     elif date_mode == 'file':
@@ -748,6 +788,8 @@ if __name__ == "__main__":
         print(f"💡 TIP: Every IP will be looked up for {range_str} ({len(static_dates)} day(s) each).")
     if buffer_days:
         print(f"💡 TIP: Single-date rows with no data will retry within +/-{buffer_days} day(s).")
+    if current_fallback_date:
+        print(f"💡 TIP: IPs with no data for {static_dates[0]} will get a current lookup, dated {current_fallback_date}.")
     print("-" * 50 + "\n")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -772,7 +814,7 @@ if __name__ == "__main__":
                 else:
                     valid_to_process.append(r)
             
-            results = executor.map(lambda r: enrich_ip(r, api_token, perform_historic_lookup, use_maxmind_geo, buffer_days), valid_to_process)
+            results = executor.map(lambda r: enrich_ip(r, api_token, perform_historic_lookup, use_maxmind_geo, buffer_days, current_fallback_date), valid_to_process)
             write_to_json_stream(results, output_file_path, failed_file_path, stats, start_main_time)
             
             if SHUTDOWN_EVENT.is_set():
@@ -784,8 +826,8 @@ if __name__ == "__main__":
     print(f"Total API Hits Evaluated: {stats['processed']}")
     print(f"Already Processed (Skip): {stats['skipped']}")
     print(f"Successfully Enriched:    {stats['success']}")
-    if buffer_days:
-        print(f"  (via date buffer):      {stats['buffered']}")
+    if buffer_days or current_fallback_date:
+        print(f"  (via buffer/fallback):  {stats['buffered']}")
     print(f"Failed Lookups:           {stats['failed']}")
     print("-" * 50)
     print(f"Successes saved to: {output_file_path}")
