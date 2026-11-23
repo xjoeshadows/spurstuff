@@ -9,10 +9,11 @@ import random
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import ipaddress
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- Configuration ---
 MAX_WORKERS = 10
+MAX_LOOKUPS_BEFORE_CONFIRM = 1_000_000
 MAX_RETRIES = 3
 BACKOFF_FACTOR = 1
 RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -33,6 +34,8 @@ def enrich_single_ip(ip: str, token: str, date_str: str = None, use_mmgeo: bool 
     if params:
         api_url += "?" + "&".join(params)
     
+    label = f"{ip} (date {date_str})" if date_str else ip
+
     for attempt in range(MAX_RETRIES + 1):
         try:
             response = requests.get(api_url, headers=headers, timeout=15)
@@ -43,14 +46,14 @@ def enrich_single_ip(ip: str, token: str, date_str: str = None, use_mmgeo: bool 
                 delay = BACKOFF_FACTOR * (2 ** attempt) + random.uniform(0, 1)
                 time.sleep(delay)
             else:
-                return ("error", f"Failed for {ip}: HTTP {err.response.status_code}")
+                return ("error", f"Failed for {label}: HTTP {err.response.status_code}")
         except requests.exceptions.RequestException as err:
             if attempt < MAX_RETRIES:
                 delay = BACKOFF_FACTOR * (2 ** attempt) + random.uniform(0, 1)
                 time.sleep(delay)
             else:
-                return ("error", f"Failed for {ip} after {MAX_RETRIES} retries: {err}")
-    return ("error", f"Failed for {ip} after {MAX_RETRIES} retries.")
+                return ("error", f"Failed for {label} after {MAX_RETRIES} retries: {err}")
+    return ("error", f"Failed for {label} after {MAX_RETRIES} retries.")
 
 
 def enrich_single_tag(tag: str, token: str) -> tuple:
@@ -154,24 +157,56 @@ def get_items_from_user(item_type: str) -> list:
 
     return final_items
 
-def get_historical_date() -> str | None:
-    """Asks user if they want to perform a historical lookup."""
+def parse_date_input(date_input: str) -> list:
+    """Parses 'YYYYMMDD' or 'YYYYMMDD-YYYYMMDD' (inclusive) into a list of YYYYMMDD strings.
+
+    Raises ValueError if the input is malformed or the range is reversed.
+    """
+    parts = [p.strip() for p in date_input.strip().split('-')]
+    if len(parts) == 1:
+        datetime.strptime(parts[0], '%Y%m%d')
+        return [parts[0]]
+    if len(parts) != 2:
+        raise ValueError("Use a single date or a range like 20250101-20250107.")
+
+    start = datetime.strptime(parts[0], '%Y%m%d')
+    end = datetime.strptime(parts[1], '%Y%m%d')
+    if end < start:
+        raise ValueError("The end date must not be before the start date.")
+    return [(start + timedelta(days=i)).strftime('%Y%m%d') for i in range((end - start).days + 1)]
+
+
+def get_historical_dates() -> list:
+    """Asks the user if they want a historical lookup.
+
+    Returns a list of dates (YYYYMMDD) to query, or [None] for a current (non-historical) lookup.
+    """
     while True:
-        sys.stderr.write("\nPerform a historical lookup for a specific date? (yes/no): ")
+        sys.stderr.write("\nPerform a historical lookup? (yes/no): ")
         sys.stderr.flush()
         choice = sys.stdin.readline().strip().lower()
-        if choice in ['no', 'n']: return None
+        if choice in ['no', 'n']: return [None]
         if choice in ['yes', 'y']:
             while True:
-                sys.stderr.write("Enter date in YYYYMMDD format: ")
+                sys.stderr.write("Enter a date (YYYYMMDD) or an inclusive range (YYYYMMDD-YYYYMMDD): ")
                 sys.stderr.flush()
                 date_input = sys.stdin.readline().strip()
                 try:
-                    datetime.strptime(date_input, '%Y%m%d')
-                    return date_input
-                except ValueError:
-                    print("❌ Invalid format. Please use YYYYMMDD.", file=sys.stderr)
+                    return parse_date_input(date_input)
+                except ValueError as e:
+                    print(f"❌ Invalid input: {e} Dates must be in YYYYMMDD format.", file=sys.stderr)
         print("Invalid input. Please enter 'yes' or 'no'.", file=sys.stderr)
+
+
+def confirm_lookup_volume(num_ips: int, num_dates: int) -> bool:
+    """Asks for confirmation when IPs x dates produces a very large number of API calls."""
+    total = num_ips * num_dates
+    if total <= MAX_LOOKUPS_BEFORE_CONFIRM:
+        return True
+    print(f"⚠️ WARNING: {num_ips:,} IPs x {num_dates:,} dates = {total:,} lookups.", file=sys.stderr)
+    sys.stderr.write("Are you sure you want to proceed with all lookups? (yes/no): ")
+    sys.stderr.flush()
+    return sys.stdin.readline().strip().lower() in ['y', 'yes']
 
 def get_mmgeo_preference() -> bool:
     """Asks user if they want to use MaxMind for geolocation."""
@@ -211,12 +246,21 @@ def run_enrichment_flow():
             print(f"\nNo {item_type} were found. Exiting.", file=sys.stderr)
             return
 
-        date_str = get_historical_date()
+        dates = get_historical_dates()
+        if not confirm_lookup_volume(len(item_list), len(dates)):
+            print("Cancelled.", file=sys.stderr)
+            return
         use_mmgeo = get_mmgeo_preference()
-        
-        print(f"\nFound {len(item_list)} {item_type}. Starting enrichment... ⚙️\n", file=sys.stderr)
-        
-        filename_prefix = date_str or datetime.now().strftime('%Y%m%d')
+
+        total_lookups = len(item_list) * len(dates)
+        if dates[0] is None:
+            print(f"\nFound {len(item_list)} {item_type}. Starting enrichment... ⚙️\n", file=sys.stderr)
+            filename_prefix = datetime.now().strftime('%Y%m%d')
+        else:
+            print(f"\nFound {len(item_list)} {item_type} x {len(dates)} date(s) "
+                  f"({dates[0]} to {dates[-1]}) = {total_lookups:,} lookups. Starting enrichment... ⚙️\n",
+                  file=sys.stderr)
+            filename_prefix = dates[0] if len(dates) == 1 else f"{dates[0]}-{dates[-1]}"
         default_filename = f"{filename_prefix}_IPEnrichment.jsonl"
 
     else:  # mode_choice == '2'
@@ -237,21 +281,30 @@ def run_enrichment_flow():
     
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         if mode_choice == '1':
-            future_to_item = {executor.submit(enrich_single_ip, ip, api_token, date_str, use_mmgeo): ip for ip in item_list}
+            # One lookup per (IP, date) pair
+            future_to_item = {
+                executor.submit(enrich_single_ip, ip, api_token, d, use_mmgeo): (ip, d)
+                for d in dates for ip in item_list
+            }
         else:  # mode_choice == '2'
-            future_to_item = {executor.submit(enrich_single_tag, tag, api_token): tag for tag in item_list}
+            future_to_item = {executor.submit(enrich_single_tag, tag, api_token): (tag, None) for tag in item_list}
 
         for future in as_completed(future_to_item):
-            item = future_to_item[future]
+            item, item_date = future_to_item[future]
             try:
                 status, data = future.result()
                 if status == "success":
+                    # Responses don't say which date was queried, so tag them when several dates are
+                    # in play. Single-date and non-historical output stays the raw API response.
+                    if mode_choice == '1' and len(dates) > 1 and isinstance(data, dict):
+                        data["queried_date"] = item_date
                     print(json.dumps(data, ensure_ascii=False))
                     all_results.append(data)
                 else:
                     failed_items.append(data)
             except Exception as exc:
-                failed_items.append(f"Unexpected error for {item}: {exc}")
+                suffix = f" (date {item_date})" if item_date else ""
+                failed_items.append(f"Unexpected error for {item}{suffix}: {exc}")
 
     print("\nEnrichment complete.", file=sys.stderr)
     
